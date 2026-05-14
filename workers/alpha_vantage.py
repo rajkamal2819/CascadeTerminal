@@ -1,9 +1,13 @@
 """
-Alpha Vantage technicals (RSI, MACD, MA50, MA200) → companies enrichment.
+Alpha Vantage technicals → companies enrichment.
 
-Free tier: 25 API calls per day. With 4 indicators per ticker that's only
-6 tickers/day. We rotate through the top tickers by market cap, storing the
-latest reading on the company doc as `technicals.{indicator}`.
+Free tier reality (2026): only TIME_SERIES_DAILY and RSI are free. MACD,
+SMA, EMA, etc. are now premium-only. The free quota is 25 calls / day
+and Alpha Vantage requires ~12s between requests.
+
+We rotate through the top tickers by market cap, refreshing RSI(14) on
+each pass. With a 12s spacing and 1-hour interval, we touch the oldest
+ticker on each tick and stay well inside both rate limits.
 
 Set ALPHA_VANTAGE_API_KEY in .env.
 
@@ -14,6 +18,7 @@ Run:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -28,17 +33,15 @@ ENDPOINT = "https://www.alphavantage.co/query"
 
 API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()
 DAILY_CALL_BUDGET = int(os.environ.get("ALPHA_VANTAGE_DAILY_BUDGET", "20"))
+SECONDS_BETWEEN_CALLS = float(os.environ.get("ALPHA_VANTAGE_CALL_SPACING", "13"))
 
-# Indicators to fetch and how to read the latest value from the response.
+# Only RSI is free on Alpha Vantage's current free tier. Add more here
+# (with a paid key, or if AV unlocks them again).
 INDICATORS: list[tuple[str, dict[str, str], str, str]] = [
     # (function, extra_params, response_key, value_field)
-    ("RSI",  {"interval": "daily", "time_period": "14", "series_type": "close"}, "Technical Analysis: RSI", "RSI"),
-    ("MACD", {"interval": "daily", "series_type": "close"}, "Technical Analysis: MACD", "MACD"),
-    ("SMA",  {"interval": "daily", "time_period": "50",  "series_type": "close"}, "Technical Analysis: SMA", "SMA"),
-    ("SMA",  {"interval": "daily", "time_period": "200", "series_type": "close"}, "Technical Analysis: SMA", "SMA"),
+    ("RSI", {"interval": "daily", "time_period": "14", "series_type": "close"}, "Technical Analysis: RSI", "RSI"),
 ]
-# Tag each indicator with a stable storage key.
-INDICATOR_KEYS = ["rsi_14", "macd", "sma_50", "sma_200"]
+INDICATOR_KEYS = ["rsi_14"]
 
 
 @retry(
@@ -102,11 +105,14 @@ async def poll_once() -> None:
     refreshed = 0
 
     async with httpx.AsyncClient() as client:
-        for ticker in tickers:
+        for i, ticker in enumerate(tickers):
             tech: dict[str, Any] = {}
             for (function, extra, series_key, value_field), storage_key in zip(
                 INDICATORS, INDICATOR_KEYS, strict=True
             ):
+                if i > 0:
+                    await asyncio.sleep(SECONDS_BETWEEN_CALLS)  # AV free tier rate limit
+
                 params = {
                     "function": function,
                     "symbol": ticker,
@@ -119,10 +125,10 @@ async def poll_once() -> None:
                     jlog("error", "alphav.call.fail", ticker=ticker, function=function, error=str(exc)[:200])
                     continue
 
-                # Alpha Vantage returns {"Note": "..."} when rate-limited.
+                # AV puts rate-limit / premium-gate notices in "Note" / "Information".
                 if "Note" in body or "Information" in body:
-                    jlog("warn", "alphav.rate_limited", note=str(body)[:200])
-                    break
+                    jlog("warn", "alphav.rate_limited", function=function, note=str(body)[:200])
+                    return  # stop the whole pass; next interval will retry
 
                 pair = _latest_value(body, series_key, value_field)
                 if pair:
