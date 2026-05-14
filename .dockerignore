@@ -1,0 +1,15 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+node_modules
+.next
+web
+docs
+*.md
+!README.md
+.env
+.env.*
+gcp-key.json
+.DS_Store

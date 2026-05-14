@@ -1,0 +1,69 @@
+substitutions:
+  _REGION: us-central1
+  _API_SERVICE: cascade-api
+  _WORKERS_IMAGE: cascade-workers
+
+steps:
+  - id: build-api
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/cascade/${_API_SERVICE}:$SHORT_SHA
+      - -f
+      - Dockerfile
+      - .
+
+  - id: push-api
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/cascade/${_API_SERVICE}:$SHORT_SHA
+
+  - id: deploy-api
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_API_SERVICE}
+      - --image
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/cascade/${_API_SERVICE}:$SHORT_SHA
+      - --region
+      - ${_REGION}
+      - --platform
+      - managed
+      - --allow-unauthenticated
+      - --min-instances
+      - "1"
+      - --max-instances
+      - "3"
+      - --memory
+      - 1Gi
+      - --cpu
+      - "1"
+      - --set-secrets
+      - MONGODB_URI=MONGODB_URI:latest,VOYAGE_API_KEY=VOYAGE_API_KEY:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest
+
+  - id: build-workers
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/cascade/${_WORKERS_IMAGE}:$SHORT_SHA
+      - -f
+      - workers.Dockerfile
+      - .
+
+  - id: push-workers
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/cascade/${_WORKERS_IMAGE}:$SHORT_SHA
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/cascade/${_API_SERVICE}:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/cascade/${_WORKERS_IMAGE}:$SHORT_SHA
+
+options:
+  logging: CLOUD_LOGGING_ONLY

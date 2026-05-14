@@ -1,0 +1,27 @@
+# Private build docs — never commit
+CLAUDE.md
+PHASES.md
+SETUP.md
+DEPLOY.md
+PLAN.md
+
+# Secrets & local state
+.env
+.env.*
+!.env.example
+gcp-key.json
+
+# Build artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+.next/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
