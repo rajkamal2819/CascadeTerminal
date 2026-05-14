@@ -135,13 +135,30 @@ class EventDraft:
 async def upsert_events(drafts: Iterable[EventDraft]) -> tuple[int, int]:
     """
     Bulk upsert events on (source_type, external_id). Returns (inserted, modified).
-    Empty drafts return (0, 0). Embedding is left empty — Phase 3 fills it.
+
+    Embeds each event's text via Voyage at insert time so the vector index
+    is populated continuously. If VOYAGE_API_KEY isn't set we still insert
+    the document (without embedding); scripts/backfill_embeddings.py can
+    fill them in later.
     """
     from pymongo import UpdateOne
 
     docs = [d.to_doc() for d in drafts]
     if not docs:
         return (0, 0)
+
+    # Best-effort embed. Failure here must not block ingestion — the
+    # backfill script is the safety net.
+    if os.environ.get("VOYAGE_API_KEY"):
+        try:
+            from embed.text import embed_documents
+
+            vectors = await embed_documents([d["text"] for d in docs])
+            for d, vec in zip(docs, vectors, strict=True):
+                d["embedding"] = vec
+                d["embedded_at"] = datetime.now(timezone.utc)
+        except Exception as exc:  # noqa: BLE001
+            jlog("warn", "events.embed.skip", error=type(exc).__name__, message=str(exc)[:200])
 
     ops = [
         UpdateOne(
