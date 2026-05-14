@@ -81,9 +81,11 @@ async def create_search_indexes(db) -> None:
     """
     Atlas Vector Search + Atlas Search indexes.
 
-    The vector index uses Automated Embedding: MongoDB auto-generates the
-    embedding via voyage-3-large when text is inserted/updated. No client-side
-    embedding for the events.text field.
+    NOTE on embeddings: Atlas "Automated Embedding" (the model/sourcePath
+    fields on the vector index) needs an Embedding Model resource set up at
+    the Atlas project level first. We use a plain vector index here and
+    have workers embed text client-side via the Voyage SDK in embed/text.py
+    (Phase 3). The events.embedding field gets populated on insert.
     """
     print("Creating search indexes (this is async — wait 1-3 minutes to activate)...")
 
@@ -95,8 +97,6 @@ async def create_search_indexes(db) -> None:
                     "path": "embedding",
                     "numDimensions": 1024,
                     "similarity": "cosine",
-                    "model": "voyage-3-large",
-                    "sourcePath": "text",
                 },
                 {"type": "filter", "path": "tickers"},
                 {"type": "filter", "path": "sector"},
@@ -149,8 +149,6 @@ async def create_search_indexes(db) -> None:
                     "path": "embedding",
                     "numDimensions": 1024,
                     "similarity": "cosine",
-                    "model": "voyage-3-large",
-                    "sourcePath": "summary",
                 },
                 {"type": "filter", "path": "root_ticker"},
             ],
@@ -163,8 +161,17 @@ async def create_search_indexes(db) -> None:
         await db.cascades.create_search_index(model=cascade_vector)
         print("  cascades_vector_index")
     except Exception as exc:
-        if "already exists" in str(exc).lower():
+        msg = str(exc).lower()
+        if "already exists" in msg:
             print("  cascades_vector_index — already exists, skipping")
+        elif "maximum number of fts indexes" in msg:
+            # M0 free tier only allows 2 search indexes. The 2 on events are
+            # the priority. Cascade semantic-search is a Phase 4 nice-to-have
+            # and works fine without this index — fall back to regular queries.
+            print(
+                "  cascades_vector_index — SKIPPED (M0 free tier hit 2-index limit; "
+                "upgrade to M2+ to enable cascade semantic search)"
+            )
         else:
             raise
 
