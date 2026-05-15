@@ -2,8 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import { GitBranch, Network, Pause, Play, Radio, RotateCcw } from "lucide-react";
 import { useStore } from "@/lib/store";
 import type { CascadeNode, CascadeEdge, CascadeResponse } from "@/lib/api";
+
+// ============================================================================
+// Colour + polarity model
+// ============================================================================
 
 const REL_COLOR: Record<string, string> = {
   supplier: "#4ade80",
@@ -15,7 +20,32 @@ const REL_COLOR: Record<string, string> = {
   root: "#ff4d6d",
 };
 
-// Ring radii per hop level
+// Polarity: how a *negative shock* on the root propagates.
+//   "damage"   → red, shock hurts this node (supplier loses orders, sector cohort sells off)
+//   "exposed"  → amber, mixed exposure (customer, peer)
+//   "benefit"  → green, substitute / derivative play that *wins* from the shock
+//   "related"  → grey, semantic only — direction unknown
+const POLARITY: Record<string, "damage" | "exposed" | "benefit" | "related"> = {
+  supplier: "damage",
+  sector: "damage",
+  customer: "exposed",
+  peer: "exposed",
+  derivative: "benefit",
+  semantic: "related",
+};
+
+const POLARITY_COLOR: Record<"damage" | "exposed" | "benefit" | "related" | "root", string> = {
+  damage: "#ff4d6d",
+  exposed: "#fbbf24",
+  benefit: "#4ade80",
+  related: "#94a3b8",
+  root: "#ff4d6d",
+};
+
+// ============================================================================
+// Geometry
+// ============================================================================
+
 const RING_R: Record<number, number> = { 0: 0, 1: 150, 2: 265, 3: 345 };
 const ROOT_R = 22;
 const NODE_R = 12;
@@ -26,44 +56,71 @@ interface PlacedNode extends Vec {
   ticker: string;
   company: string;
   color: string;
+  polarity: "damage" | "exposed" | "benefit" | "related" | "root";
   level: string;
   hop: number;
   score: number;
+  weight: number;
   relType: string;
   isRoot: boolean;
+  isBottleneck: boolean;
 }
 
 interface PlacedEdge {
   from: Vec;
   to: Vec;
-  cx: number; // bezier control point
+  cx: number;
   cy: number;
   color: string;
   pathId: string;
-  length: number;
+  weight: number;     // 0..1 — drives stroke width in Sankey
+  fromHop: number;
+  toHop: number;
 }
 
-function buildLayout(
-  cascade: CascadeResponse | null,
-  W: number,
-  H: number,
-): { nodes: PlacedNode[]; edges: PlacedEdge[] } {
+type Layout = "radial" | "sankey";
+
+// ============================================================================
+// Layout builders
+// ============================================================================
+
+function detectBottleneck(cascade: CascadeResponse): string | null {
+  // The L1 ticker that the most L2+ nodes route through.
+  const inDegree = new Map<string, number>();
+  for (const e of cascade.edges) {
+    if (e.hop >= 2) inDegree.set(e.from, (inDegree.get(e.from) ?? 0) + 1);
+  }
+  let best: [string, number] | null = null;
+  for (const [k, v] of inDegree) {
+    if (!best || v > best[1]) best = [k, v];
+  }
+  // Only call it a bottleneck if it dominates (>= 40% of L2 routing)
+  const totalL2 = cascade.edges.filter((e) => e.hop >= 2).length || 1;
+  if (best && best[1] / totalL2 >= 0.4 && best[1] >= 2) return best[0];
+  return null;
+}
+
+function classifyNode(relType: string, isRoot: boolean): PlacedNode["polarity"] {
+  if (isRoot) return "root";
+  return POLARITY[relType] ?? "related";
+}
+
+function buildRadial(cascade: CascadeResponse, W: number, H: number, bottleneck: string | null) {
   const ox = W / 2;
   const oy = H / 2;
   const nodes: PlacedNode[] = [];
   const edges: PlacedEdge[] = [];
-  if (!cascade) return { nodes, edges };
 
-  // Root at center
   nodes.push({
     ticker: cascade.root.tickers[0] ?? "—",
     company: (cascade.root.headline ?? "").slice(0, 30),
     x: ox, y: oy,
     color: "#ff4d6d",
-    level: "ROOT", hop: 0, score: 1, relType: "root", isRoot: true,
+    polarity: "root",
+    level: "ROOT", hop: 0, score: 1, weight: 1, relType: "root",
+    isRoot: true, isBottleneck: false,
   });
 
-  // Group by hop; clamp hop to 1-3 so nothing goes to center
   const byHop = new Map<number, CascadeNode[]>();
   for (const n of cascade.nodes) {
     const h = Math.max(1, n.hop ?? 1);
@@ -74,59 +131,200 @@ function buildLayout(
   const posMap = new Map<string, Vec>();
   posMap.set(cascade.root.tickers[0] ?? "ROOT", { x: ox, y: oy });
 
-  // Place each hop ring
   for (const [hop, group] of [...byHop.entries()].sort((a, b) => a[0] - b[0])) {
     const r = RING_R[hop] ?? 345;
     const count = group.length;
-    // Spread evenly, offset by hop * 15° to break perfect stacking on small groups
     const offsetAngle = (hop * Math.PI) / 6 - Math.PI / 2;
     group.forEach((n, i) => {
       const angle = offsetAngle + (2 * Math.PI / count) * i;
       const x = ox + r * Math.cos(angle);
       const y = oy + r * Math.sin(angle);
-      const color = REL_COLOR[n.relationship_type] ?? "#94a3b8";
+      const polarity = classifyNode(n.relationship_type, false);
       nodes.push({
         ticker: n.ticker, company: (n.company ?? "").slice(0, 20),
-        x, y, color, level: n.level, hop, score: n.cascade_score,
+        x, y,
+        color: POLARITY_COLOR[polarity],
+        polarity,
+        level: n.level, hop, score: n.cascade_score,
+        weight: n.cascade_score,
         relType: n.relationship_type, isRoot: false,
+        isBottleneck: n.ticker === bottleneck,
       });
       posMap.set(n.ticker, { x, y });
     });
   }
 
-  // Build curved edges
   const seen = new Set<string>();
   const allEdges: CascadeEdge[] = cascade.edges.length > 0
     ? cascade.edges
-    // For semantic fallback, synthesise root→node edges
     : cascade.nodes.map((n: CascadeNode) => ({ from: cascade.root.tickers[0] ?? "", to: n.ticker, type: n.relationship_type, weight: n.cascade_score, hop: 1 }));
 
   for (const e of allEdges.slice(0, 60)) {
-    const key = `${e.from}→${e.to}`;
+    const key = `${e.from}_${e.to}`;
     if (seen.has(key)) continue;
     seen.add(key);
     const f = posMap.get(e.from) ?? { x: ox, y: oy };
     const t = posMap.get(e.to);
     if (!t) continue;
-    // Quadratic bezier control point: pull slightly toward center for organic curves
     const mx = (f.x + t.x) / 2;
     const my = (f.y + t.y) / 2;
-    // Offset control point toward/away from center for curvature
     const dx = ox - mx;
     const dy = oy - my;
     const d = Math.sqrt(dx * dx + dy * dy) || 1;
-    const curveFactor = 0.25;
-    const cx = mx + (dx / d) * d * curveFactor;
-    const cy = my + (dy / d) * d * curveFactor;
-    // Approximate path length for dash animation
-    const len = Math.sqrt((t.x - f.x) ** 2 + (t.y - f.y) ** 2) * 1.1;
-    edges.push({ from: f, to: t, cx, cy, color: REL_COLOR[e.type] ?? "#94a3b8", pathId: key.replace(/[^a-zA-Z0-9]/g, "_"), length: len });
+    const cx = mx + (dx / d) * d * 0.25;
+    const cy = my + (dy / d) * d * 0.25;
+    const polarity = POLARITY[e.type] ?? "related";
+    edges.push({
+      from: f, to: t, cx, cy,
+      color: POLARITY_COLOR[polarity],
+      pathId: key.replace(/[^a-zA-Z0-9]/g, "_"),
+      weight: e.weight,
+      fromHop: 0, toHop: e.hop,
+    });
   }
 
   return { nodes, edges };
 }
 
-// Animated particle that travels along a bezier path
+function buildSankey(cascade: CascadeResponse, W: number, H: number, bottleneck: string | null) {
+  // Three columns: Root | L1 | L2 (L3 folded into L2 column for readability)
+  const colX = [W * 0.12, W * 0.5, W * 0.85];
+  const nodes: PlacedNode[] = [];
+  const edges: PlacedEdge[] = [];
+
+  // Root
+  nodes.push({
+    ticker: cascade.root.tickers[0] ?? "—",
+    company: (cascade.root.headline ?? "").slice(0, 26),
+    x: colX[0], y: H / 2,
+    color: "#ff4d6d",
+    polarity: "root",
+    level: "ROOT", hop: 0, score: 1, weight: 1, relType: "root",
+    isRoot: true, isBottleneck: false,
+  });
+
+  // Partition by column
+  const l1: CascadeNode[] = [];
+  const l2: CascadeNode[] = [];
+  for (const n of cascade.nodes) {
+    const h = Math.max(1, n.hop ?? 1);
+    if (h === 1) l1.push(n);
+    else l2.push(n);
+  }
+  // Sort within column by score desc (heaviest at top, eye reads down)
+  l1.sort((a, b) => b.cascade_score - a.cascade_score);
+  l2.sort((a, b) => b.cascade_score - a.cascade_score);
+
+  const posMap = new Map<string, Vec>();
+  posMap.set(cascade.root.tickers[0] ?? "ROOT", { x: colX[0], y: H / 2 });
+
+  const placeColumn = (group: CascadeNode[], xc: number, hop: number) => {
+    if (group.length === 0) return;
+    const padding = 40;
+    const usable = H - padding * 2;
+    const step = group.length === 1 ? 0 : usable / (group.length - 1);
+    group.forEach((n, i) => {
+      const y = padding + (group.length === 1 ? usable / 2 : step * i);
+      const polarity = classifyNode(n.relationship_type, false);
+      nodes.push({
+        ticker: n.ticker, company: (n.company ?? "").slice(0, 18),
+        x: xc, y,
+        color: POLARITY_COLOR[polarity],
+        polarity,
+        level: n.level, hop, score: n.cascade_score,
+        weight: n.cascade_score,
+        relType: n.relationship_type, isRoot: false,
+        isBottleneck: n.ticker === bottleneck,
+      });
+      posMap.set(n.ticker, { x: xc, y });
+    });
+  };
+
+  placeColumn(l1, colX[1], 1);
+  placeColumn(l2, colX[2], 2);
+
+  // Edges — cubic bezier with horizontal tangents (Sankey style)
+  const seen = new Set<string>();
+  const allEdges: CascadeEdge[] = cascade.edges.length > 0
+    ? cascade.edges
+    : cascade.nodes.map((n: CascadeNode) => ({ from: cascade.root.tickers[0] ?? "", to: n.ticker, type: n.relationship_type, weight: n.cascade_score, hop: 1 }));
+
+  for (const e of allEdges.slice(0, 80)) {
+    const key = `${e.from}_${e.to}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const f = posMap.get(e.from);
+    const t = posMap.get(e.to);
+    if (!f || !t) continue;
+    const polarity = POLARITY[e.type] ?? "related";
+    // For Sankey: cubic bezier with horizontal control points
+    const cxMid = (f.x + t.x) / 2;
+    edges.push({
+      from: f, to: t,
+      cx: cxMid, cy: (f.y + t.y) / 2,
+      color: POLARITY_COLOR[polarity],
+      pathId: `s_${key.replace(/[^a-zA-Z0-9]/g, "_")}`,
+      weight: e.weight,
+      fromHop: e.hop - 1, toHop: e.hop,
+    });
+  }
+
+  return { nodes, edges };
+}
+
+// ============================================================================
+// Verdict — single-sentence summary of the cascade
+// ============================================================================
+
+function computeVerdict(cascade: CascadeResponse, bottleneck: string | null): {
+  riskScore: number;
+  text: string;
+  tone: "damage" | "exposed" | "benefit" | "related";
+} {
+  const isFallback = cascade.fallback === "related_events";
+  // Risk score: weighted sum of node scores with hop decay
+  let total = 0;
+  for (const n of cascade.nodes) {
+    total += (n.cascade_score ?? 0) * Math.pow(0.7, Math.max(0, (n.hop ?? 1) - 1));
+  }
+  const riskScore = Math.min(100, Math.round(total * 12));
+
+  if (isFallback) {
+    return {
+      riskScore: 0,
+      tone: "related",
+      text: `${cascade.nodes.length} semantically related events. No direct supply-chain links — root ticker is outside the seed graph.`,
+    };
+  }
+
+  // Polarity breakdown
+  const buckets: Record<string, number> = { damage: 0, exposed: 0, benefit: 0, related: 0 };
+  for (const n of cascade.nodes) {
+    const p = POLARITY[n.relationship_type] ?? "related";
+    buckets[p] += 1;
+  }
+  const dominant = Object.entries(buckets).sort((a, b) => b[1] - a[1])[0][0] as "damage" | "exposed" | "benefit" | "related";
+  const total_nodes = cascade.nodes.length;
+  const dominantPct = Math.round((buckets[dominant] / total_nodes) * 100);
+
+  let text: string;
+  if (bottleneck) {
+    text = `${dominantPct}% of cascade exposure routes through ${bottleneck} — single-point-of-failure detected.`;
+  } else if (dominant === "damage") {
+    text = `Negative cascade: ${buckets.damage} downstream tickers absorb the shock (suppliers + sector cohort).`;
+  } else if (dominant === "benefit") {
+    text = `Mixed cascade with ${buckets.benefit} substitutes positioned to benefit.`;
+  } else {
+    text = `${total_nodes}-node cascade across ${Object.values(buckets).filter((v) => v > 0).length} relationship types.`;
+  }
+
+  return { riskScore, text, tone: dominant };
+}
+
+// ============================================================================
+// Flow particle (radial only — bezier path travel)
+// ============================================================================
+
 function FlowParticle({ edge, delay }: { edge: PlacedEdge; delay: number }) {
   const ref = useRef<SVGCircleElement>(null);
   useEffect(() => {
@@ -137,9 +335,9 @@ function FlowParticle({ edge, delay }: { edge: PlacedEdge; delay: number }) {
     const len = path.getTotalLength();
     let frame = 0;
     let start = 0;
-    const duration = 1800 + delay * 200;
+    const duration = 2000 + delay * 180;
     const animate = (ts: number) => {
-      if (!start) start = ts + delay * 120;
+      if (!start) start = ts + delay * 100;
       const t = ((ts - start) % duration) / duration;
       if (t >= 0 && t <= 1) {
         try {
@@ -165,19 +363,27 @@ function FlowParticle({ edge, delay }: { edge: PlacedEdge; delay: number }) {
   );
 }
 
+// ============================================================================
+// Main component
+// ============================================================================
+
 export function CascadeGraph() {
   const cascade = useStore((s) => s.cascade);
   const loading = useStore((s) => s.cascadeLoading);
   const selectedId = useStore((s) => s.selectedEventId);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 760, h: 560 });
+  const [layout, setLayout] = useState<Layout>("radial");
+  const [replayT, setReplayT] = useState(1);   // 0..1 — fraction of cascade revealed
+  const [playing, setPlaying] = useState(false);
 
+  // Measure container
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const measure = () => {
       const r = el.getBoundingClientRect();
-      setSize({ w: Math.max(400, r.width), h: Math.max(320, r.height) });
+      setSize({ w: Math.max(400, r.width), h: Math.max(320, r.height - 80) });
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -185,10 +391,48 @@ export function CascadeGraph() {
     return () => ro.disconnect();
   }, []);
 
-  const { nodes, edges } = useMemo(
-    () => buildLayout(cascade, size.w, size.h),
-    [cascade, size],
-  );
+  // Replay animation
+  useEffect(() => {
+    if (!playing) return;
+    let raf = 0;
+    let start = 0;
+    const dur = 3000;
+    const tick = (ts: number) => {
+      if (!start) start = ts;
+      const t = Math.min(1, (ts - start) / dur);
+      setReplayT(t);
+      if (t < 1) raf = requestAnimationFrame(tick);
+      else setPlaying(false);
+    };
+    setReplayT(0);
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing]);
+
+  // Reset replay when cascade changes
+  useEffect(() => {
+    setReplayT(1);
+    setPlaying(false);
+  }, [cascade]);
+
+  const bottleneck = useMemo(() => (cascade ? detectBottleneck(cascade) : null), [cascade]);
+
+  const { nodes, edges } = useMemo(() => {
+    if (!cascade) return { nodes: [], edges: [] };
+    return layout === "sankey"
+      ? buildSankey(cascade, size.w, size.h, bottleneck)
+      : buildRadial(cascade, size.w, size.h, bottleneck);
+  }, [cascade, layout, size, bottleneck]);
+
+  const verdict = useMemo(() => (cascade ? computeVerdict(cascade, bottleneck) : null), [cascade, bottleneck]);
+
+  // Max hop for replay scaling
+  const maxHop = useMemo(() => nodes.reduce((m, n) => Math.max(m, n.hop), 0), [nodes]);
+
+  // Replay filter — show nodes whose hop is fully "revealed"
+  const hopThreshold = replayT * (maxHop + 0.5);
+  const visibleNode = (n: PlacedNode) => n.hop <= hopThreshold;
+  const visibleEdge = (e: PlacedEdge) => e.toHop <= hopThreshold;
 
   if (!selectedId) {
     return (
@@ -218,40 +462,87 @@ export function CascadeGraph() {
 
   return (
     <div ref={containerRef} className="relative h-full w-full overflow-hidden">
-      {/* CSS keyframe for flowing edges */}
       <style>{`
         @keyframes flow {
           from { stroke-dashoffset: 300; }
           to   { stroke-dashoffset: 0; }
         }
-        .flow-edge {
-          animation: flow 2.4s linear infinite;
-        }
+        .flow-edge { animation: flow 2.4s linear infinite; }
+        .node-transition { transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1); }
       `}</style>
 
+      {/* ── Top bar: verdict + controls ─────────────────────────────── */}
+      <div className="absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-3 px-4 pt-3">
+        {/* Verdict pill */}
+        {verdict && (
+          <motion.div
+            key={verdict.text}
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35 }}
+            className="glass-strong flex max-w-md items-start gap-3 rounded-xl px-3 py-2"
+          >
+            {/* Risk meter */}
+            {!isSemantic && (
+              <div className="flex shrink-0 flex-col items-center gap-0.5 border-r border-white/10 pr-3">
+                <div className="mono text-[8px] uppercase tracking-widest text-muted">risk</div>
+                <div className="mono text-[18px] font-bold tabular-nums" style={{ color: POLARITY_COLOR[verdict.tone] }}>
+                  {verdict.riskScore}
+                </div>
+              </div>
+            )}
+            <div className="min-w-0">
+              <div className="mono text-[9px] uppercase tracking-widest" style={{ color: POLARITY_COLOR[verdict.tone] }}>
+                {isSemantic ? "semantic match" : verdict.tone === "damage" ? "negative cascade" : verdict.tone === "benefit" ? "asymmetric cascade" : "mixed cascade"}
+              </div>
+              <div className="mt-0.5 text-[11px] leading-snug text-text/90">{verdict.text}</div>
+            </div>
+          </motion.div>
+        )}
+
+        {/* Layout switcher */}
+        <div className="glass flex items-center gap-0.5 rounded-full p-0.5">
+          <button
+            onClick={() => setLayout("radial")}
+            title="Radial layout (coverage)"
+            className={
+              "inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] uppercase tracking-wider transition " +
+              (layout === "radial" ? "bg-accent/20 text-accent" : "text-muted hover:text-text")
+            }
+          >
+            <Network size={10} />
+            <span className="hidden lg:inline">Radial</span>
+          </button>
+          <button
+            onClick={() => setLayout("sankey")}
+            title="Sankey layout (flow)"
+            className={
+              "inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] uppercase tracking-wider transition " +
+              (layout === "sankey" ? "bg-accent/20 text-accent" : "text-muted hover:text-text")
+            }
+          >
+            <GitBranch size={10} />
+            <span className="hidden lg:inline">Sankey</span>
+          </button>
+        </div>
+      </div>
+
+      {/* ── SVG canvas ──────────────────────────────────────────────── */}
       <svg
         viewBox={`0 0 ${size.w} ${size.h}`}
         width={size.w}
         height={size.h}
-        className="absolute inset-0"
+        className="absolute inset-0 mt-12"
       >
         <defs>
           <radialGradient id="rootHalo" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#ff4d6d" stopOpacity="0.35" />
             <stop offset="100%" stopColor="#ff4d6d" stopOpacity="0" />
           </radialGradient>
-          {edges.map((e) => (
-            <radialGradient key={`grad_${e.pathId}`} id={`grad_${e.pathId}`} cx="0%" cy="50%" r="100%" gradientUnits="userSpaceOnUse"
-              x1={e.from.x} y1={e.from.y} x2={e.to.x} y2={e.to.y}
-            >
-              <stop offset="0%" stopColor={e.color} stopOpacity="0.6" />
-              <stop offset="100%" stopColor={e.color} stopOpacity="0.1" />
-            </radialGradient>
-          ))}
         </defs>
 
-        {/* Orbit rings */}
-        {[1, 2, 3].map((h) => (
+        {/* Orbit rings (radial only) */}
+        {layout === "radial" && [1, 2, 3].map((h) => (
           <motion.circle
             key={`ring-${h}`}
             cx={size.w / 2} cy={size.h / 2}
@@ -267,58 +558,85 @@ export function CascadeGraph() {
           />
         ))}
 
-        {/* Edges — curved bezier with flow animation */}
-        {edges.map((e, i) => (
-          <g key={e.pathId}>
-            {/* Dim base path */}
-            <path
-              id={`path_${e.pathId}`}
-              d={`M ${e.from.x} ${e.from.y} Q ${e.cx} ${e.cy} ${e.to.x} ${e.to.y}`}
-              fill="none"
-              stroke={e.color}
-              strokeWidth={1}
-              strokeOpacity={0.18}
-            />
-            {/* Animated flow dash */}
-            <motion.path
-              d={`M ${e.from.x} ${e.from.y} Q ${e.cx} ${e.cy} ${e.to.x} ${e.to.y}`}
-              fill="none"
-              stroke={e.color}
-              strokeWidth={1.5}
-              strokeOpacity={0.7}
-              strokeLinecap="round"
-              strokeDasharray="18 40"
-              className="flow-edge"
-              style={{ animationDelay: `${i * 0.08}s`, filter: `drop-shadow(0 0 3px ${e.color})` }}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.3 + i * 0.04 }}
-            />
-            {/* Travelling particle */}
-            <FlowParticle edge={e} delay={i} />
-          </g>
+        {/* Sankey column guides */}
+        {layout === "sankey" && [0.12, 0.5, 0.85].map((p, i) => (
+          <motion.line
+            key={`col-${i}`}
+            x1={size.w * p} y1={20} x2={size.w * p} y2={size.h - 20}
+            stroke="rgba(255,255,255,0.04)"
+            strokeWidth={1}
+            strokeDasharray="2 6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.5, delay: i * 0.1 }}
+          />
         ))}
 
-        {/* Root glow halo */}
-        <motion.circle
-          cx={size.w / 2} cy={size.h / 2} r={60}
-          fill="url(#rootHalo)"
-          initial={{ scale: 0, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ duration: 0.7, ease: "easeOut" }}
-          style={{ transformOrigin: `${size.w / 2}px ${size.h / 2}px` }}
-        />
+        {/* Edges */}
+        {edges.filter(visibleEdge).map((e, i) => {
+          // Sankey edge stroke width proportional to weight; radial uses thin lines + particle
+          const sw = layout === "sankey" ? 1.5 + e.weight * 7 : 1.4;
+          const opacity = layout === "sankey" ? 0.35 + e.weight * 0.35 : 0.6;
+          const path = layout === "sankey"
+            ? `M ${e.from.x} ${e.from.y} C ${(e.from.x + e.to.x) / 2} ${e.from.y}, ${(e.from.x + e.to.x) / 2} ${e.to.y}, ${e.to.x} ${e.to.y}`
+            : `M ${e.from.x} ${e.from.y} Q ${e.cx} ${e.cy} ${e.to.x} ${e.to.y}`;
+          return (
+            <g key={e.pathId}>
+              {/* Base dim path */}
+              <path
+                id={`path_${e.pathId}`}
+                d={path}
+                fill="none"
+                stroke={e.color}
+                strokeWidth={sw}
+                strokeOpacity={opacity * 0.4}
+              />
+              {/* Animated flow */}
+              <motion.path
+                d={path}
+                fill="none"
+                stroke={e.color}
+                strokeWidth={sw}
+                strokeOpacity={opacity}
+                strokeLinecap="round"
+                strokeDasharray={layout === "sankey" ? "0" : "18 40"}
+                className={layout === "radial" ? "flow-edge" : ""}
+                style={{
+                  animationDelay: `${i * 0.08}s`,
+                  filter: `drop-shadow(0 0 ${layout === "sankey" ? 6 : 3}px ${e.color}88)`,
+                }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.25 + i * 0.04, duration: 0.5 }}
+              />
+              {/* Radial particle */}
+              {layout === "radial" && <FlowParticle edge={e} delay={i} />}
+            </g>
+          );
+        })}
+
+        {/* Root halo */}
+        {nodes[0] && visibleNode(nodes[0]) && (
+          <motion.circle
+            cx={nodes[0].x} cy={nodes[0].y} r={60}
+            fill="url(#rootHalo)"
+            initial={{ scale: 0, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ duration: 0.7, ease: "easeOut" }}
+            style={{ transformOrigin: `${nodes[0].x}px ${nodes[0].y}px` }}
+          />
+        )}
 
         {/* Nodes */}
-        {nodes.map((n, i) => (
+        {nodes.filter(visibleNode).map((n, i) => (
           <motion.g
             key={n.ticker + i}
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            transition={{ type: "spring", stiffness: 220, damping: 18, delay: n.isRoot ? 0 : 0.15 + i * 0.035 }}
+            transition={{ type: "spring", stiffness: 220, damping: 18, delay: n.isRoot ? 0 : 0.15 + i * 0.025 }}
             style={{ transformOrigin: `${n.x}px ${n.y}px` }}
           >
-            {/* Outer pulse ring for root */}
+            {/* Root pulse rings */}
             {n.isRoot && (
               <>
                 <motion.circle cx={n.x} cy={n.y} r={ROOT_R + 10}
@@ -334,30 +652,43 @@ export function CascadeGraph() {
               </>
             )}
 
-            {/* Score arc (ring behind node for non-root) */}
+            {/* Bottleneck halo — pulsing red ring */}
+            {n.isBottleneck && !n.isRoot && (
+              <motion.circle
+                cx={n.x} cy={n.y} r={NODE_R + 12}
+                fill="none"
+                stroke="#ff4d6d"
+                strokeWidth={1.5}
+                strokeDasharray="3 4"
+                animate={{ rotate: 360 }}
+                transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
+                style={{ transformOrigin: `${n.x}px ${n.y}px`, filter: "drop-shadow(0 0 8px #ff4d6d)" }}
+              />
+            )}
+
+            {/* Score arc */}
             {!n.isRoot && n.score > 0.1 && (
               <circle
                 cx={n.x} cy={n.y} r={NODE_R + 5}
                 fill="none"
                 stroke={n.color}
                 strokeWidth={2}
-                strokeOpacity={0.25}
+                strokeOpacity={0.3}
                 strokeDasharray={`${n.score * (2 * Math.PI * (NODE_R + 5))} 9999`}
                 transform={`rotate(-90 ${n.x} ${n.y})`}
               />
             )}
 
-            {/* Filled node circle */}
+            {/* Filled node */}
             <circle
               cx={n.x} cy={n.y}
               r={n.isRoot ? ROOT_R : NODE_R}
-              fill={`${n.color}18`}
+              fill={`${n.color}1f`}
               stroke={n.color}
-              strokeWidth={n.isRoot ? 2.5 : 1.5}
-              style={{ filter: `drop-shadow(0 0 ${n.isRoot ? 12 : 6}px ${n.color}88)` }}
+              strokeWidth={n.isRoot ? 2.5 : n.isBottleneck ? 2.5 : 1.5}
+              style={{ filter: `drop-shadow(0 0 ${n.isRoot ? 12 : n.isBottleneck ? 10 : 6}px ${n.color}88)` }}
             />
 
-            {/* Ticker label */}
             <text
               x={n.x} y={n.isRoot ? n.y + 5 : n.y + 4}
               textAnchor="middle"
@@ -365,49 +696,110 @@ export function CascadeGraph() {
               fontSize={n.isRoot ? 11 : 8}
               fontFamily="ui-monospace, monospace"
               fontWeight={700}
-              style={{ userSelect: "none", paintOrder: "stroke", stroke: "rgba(4,6,10,0.8)", strokeWidth: 3 }}
+              style={{ userSelect: "none", paintOrder: "stroke", stroke: "rgba(4,6,10,0.85)", strokeWidth: 3 }}
             >
               {n.ticker.slice(0, 5)}
             </text>
 
-            {/* Company name */}
             <text
               x={n.x}
               y={n.y + (n.isRoot ? ROOT_R + 14 : NODE_R + 12)}
               textAnchor="middle"
-              fill="rgba(139,150,168,0.75)"
+              fill="rgba(139,150,168,0.8)"
               fontSize={7}
               fontFamily="ui-sans-serif, sans-serif"
               style={{ userSelect: "none" }}
             >
               {n.company}
             </text>
+
+            {/* Bottleneck label */}
+            {n.isBottleneck && (
+              <text
+                x={n.x} y={n.y - NODE_R - 10}
+                textAnchor="middle"
+                fill="#ff4d6d"
+                fontSize={7}
+                fontFamily="ui-monospace, monospace"
+                fontWeight={700}
+                style={{ paintOrder: "stroke", stroke: "rgba(4,6,10,0.85)", strokeWidth: 3 }}
+              >
+                BOTTLENECK
+              </text>
+            )}
           </motion.g>
         ))}
+
+        {/* Sankey column labels */}
+        {layout === "sankey" && (
+          <>
+            {[
+              { x: size.w * 0.12, label: "ROOT" },
+              { x: size.w * 0.5, label: "L1 · DIRECT" },
+              { x: size.w * 0.85, label: "L2 · SECOND-ORDER" },
+            ].map((c) => (
+              <text
+                key={c.label}
+                x={c.x} y={size.h - 4}
+                textAnchor="middle"
+                fill="rgba(139,150,168,0.5)"
+                fontSize={8}
+                fontFamily="ui-monospace, monospace"
+                style={{ letterSpacing: "0.2em" }}
+              >
+                {c.label}
+              </text>
+            ))}
+          </>
+        )}
       </svg>
 
-      {/* Top badge */}
-      <div className="absolute left-3 top-3 flex items-center gap-2">
-        {isSemantic && (
-          <span className="mono rounded-full bg-white/[0.06] px-2 py-0.5 text-[9px] uppercase tracking-widest text-muted">
-            semantic · $vectorSearch
-          </span>
-        )}
-        {!isSemantic && (
-          <span className="mono rounded-full bg-accent/10 px-2 py-0.5 text-[9px] uppercase tracking-widest text-accent/80">
-            {cascade.nodes.length} nodes · $graphLookup
-          </span>
-        )}
+      {/* ── Replay scrubber ─────────────────────────────────────────── */}
+      <div className="absolute inset-x-0 bottom-0 z-10 px-4 pb-3">
+        <div className="glass mx-auto flex max-w-2xl items-center gap-3 rounded-full px-3 py-1.5">
+          <button
+            onClick={() => {
+              if (replayT >= 1) setReplayT(0);
+              setPlaying((p) => !p);
+            }}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent/15 text-accent transition hover:bg-accent/25"
+            title={playing ? "Pause replay" : "Play cascade replay"}
+          >
+            {playing ? <Pause size={12} /> : <Play size={12} />}
+          </button>
+          <button
+            onClick={() => { setReplayT(1); setPlaying(false); }}
+            className="text-muted hover:text-text transition"
+            title="Show full cascade"
+          >
+            <RotateCcw size={11} />
+          </button>
+          <div className="mono text-[9px] uppercase tracking-widest text-muted">replay</div>
+          <input
+            type="range"
+            min={0} max={100}
+            value={Math.round(replayT * 100)}
+            onChange={(e) => { setPlaying(false); setReplayT(Number(e.target.value) / 100); }}
+            className="flex-1 accent-[var(--accent)]"
+          />
+          <div className="mono w-10 text-right text-[9px] tabular-nums text-muted">
+            {Math.round(replayT * (maxHop || 1) * 10) / 10}
+          </div>
+          <div className="mono flex items-center gap-1 text-[9px] uppercase tracking-widest text-muted">
+            <Radio size={10} className="text-accent" />
+            <span>{isSemantic ? "$vectorSearch" : `${cascade.nodes.length} nodes`}</span>
+          </div>
+        </div>
       </div>
 
-      {/* Legend */}
-      <div className="absolute bottom-3 left-0 right-0 flex flex-wrap justify-center gap-x-3 gap-y-1 px-4 text-[8.5px] font-mono uppercase tracking-widest">
-        {Object.entries(REL_COLOR)
-          .filter(([k]) => k !== "root" && cascade.nodes.some((n) => n.relationship_type === k))
-          .map(([k, v]) => (
-            <span key={k} className="flex items-center gap-1" style={{ color: v }}>
-              <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: v }} />
-              {k}
+      {/* ── Polarity legend ─────────────────────────────────────────── */}
+      <div className="absolute right-3 bottom-14 flex flex-col gap-1 text-[8.5px] font-mono uppercase tracking-widest">
+        {(["damage", "exposed", "benefit", "related"] as const)
+          .filter((p) => nodes.some((n) => n.polarity === p))
+          .map((p) => (
+            <span key={p} className="flex items-center gap-1.5" style={{ color: POLARITY_COLOR[p] }}>
+              <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: POLARITY_COLOR[p] }} />
+              {p}
             </span>
           ))}
       </div>

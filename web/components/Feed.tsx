@@ -71,7 +71,26 @@ function relativeTime(iso: string | null | undefined): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h`;
   const d = Math.floor(h / 24);
-  return `${d}d`;
+  if (d < 7) return `${d}d`;
+  // Absolute date past a week
+  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function dayBucket(iso: string | null | undefined): string {
+  if (!iso) return "Earlier";
+  const t = new Date(iso).getTime();
+  if (!t) return "Earlier";
+  const now = new Date();
+  const eventDay = new Date(iso);
+  const sameDay = now.toDateString() === eventDay.toDateString();
+  if (sameDay) return "Today";
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (yesterday.toDateString() === eventDay.toDateString()) return "Yesterday";
+  const diffDays = Math.floor((now.getTime() - t) / (1000 * 60 * 60 * 24));
+  if (diffDays < 7) return "This week";
+  if (diffDays < 30) return "This month";
+  return "Earlier";
 }
 
 export function Feed() {
@@ -133,6 +152,28 @@ export function Feed() {
     return xs;
   }, [events, impact, cascadableOnly, sort]);
 
+  // Interleave day-group headers into the list (only when sorted by newest)
+  type ListItem =
+    | { kind: "header"; label: string; key: string }
+    | { kind: "event"; event: typeof filtered[0]; key: string };
+
+  const listItems: ListItem[] = useMemo(() => {
+    if (sort !== "newest") {
+      return filtered.map((e) => ({ kind: "event" as const, event: e, key: e.id }));
+    }
+    const out: ListItem[] = [];
+    let lastBucket = "";
+    for (const e of filtered) {
+      const b = dayBucket(e.published_at);
+      if (b !== lastBucket) {
+        out.push({ kind: "header", label: b, key: `h_${b}` });
+        lastBucket = b;
+      }
+      out.push({ kind: "event", event: e, key: e.id });
+    }
+    return out;
+  }, [filtered, sort]);
+
   // Sector chip counts derived from currently-loaded events.
   const sectorCounts = useMemo(() => {
     const map = new Map<string, number>();
@@ -185,7 +226,9 @@ export function Feed() {
         const next = filtered[nextIdx];
         if (next) {
           selectEvent(next.id);
-          listRef.current?.scrollToItem(nextIdx, "smart");
+          // Find position in listItems (which has interleaved headers)
+          const listIdx = listItems.findIndex((it) => it.kind === "event" && it.event.id === next.id);
+          if (listIdx >= 0) listRef.current?.scrollToItem(listIdx, "smart");
         }
       } else if (ev.key === "Escape") {
         selectEvent(null);
@@ -193,7 +236,7 @@ export function Feed() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [filtered, selectedId, selectEvent]);
+  }, [filtered, listItems, selectedId, selectEvent]);
 
   const emptyFiltered = filtered.length === 0;
 
@@ -386,12 +429,25 @@ export function Feed() {
           className="thin-scroll"
           height={height}
           width={"100%"}
-          itemCount={filtered.length}
+          itemCount={listItems.length}
           itemSize={ROW_HEIGHT}
           overscanCount={6}
         >
           {({ index, style }) => {
-            const e = filtered[index];
+            const item = listItems[index];
+            if (item.kind === "header") {
+              return (
+                <div
+                  style={style}
+                  className="mono flex items-center gap-2 border-b border-white/[0.04] bg-white/[0.02] px-3 text-[9px] uppercase tracking-[0.2em] text-muted"
+                >
+                  <span className="h-px flex-1 bg-white/10" />
+                  <span>{item.label}</span>
+                  <span className="h-px flex-1 bg-white/10" />
+                </div>
+              );
+            }
+            const e = item.event;
             const selected = e.id === selectedId;
             const sectorColor = e.sector ? SECTOR_COLOR[e.sector] : undefined;
             const isCritical = e.impact === "critical";

@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Zap, Network, ArrowUpRight } from "lucide-react";
-import { api, type CascadeNode } from "@/lib/api";
+import { api, type CascadeNode, type CascadeResponse, type CascadeEdge } from "@/lib/api";
 import { useStore } from "@/lib/store";
 
 const REL_COLOR: Record<string, string> = {
@@ -14,6 +14,86 @@ const REL_COLOR: Record<string, string> = {
   derivative: "#f472b6",
   semantic: "#94a3b8",
 };
+
+const POLARITY: Record<string, "damage" | "exposed" | "benefit" | "related"> = {
+  supplier: "damage",
+  sector: "damage",
+  customer: "exposed",
+  peer: "exposed",
+  derivative: "benefit",
+  semantic: "related",
+};
+
+const POLARITY_COLOR: Record<string, string> = {
+  damage: "#ff4d6d",
+  exposed: "#fbbf24",
+  benefit: "#4ade80",
+  related: "#94a3b8",
+};
+
+const POLARITY_LABEL: Record<string, string> = {
+  damage: "negative cascade",
+  exposed: "mixed cascade",
+  benefit: "asymmetric cascade",
+  related: "semantic match",
+};
+
+interface Verdict {
+  riskScore: number;
+  tone: "damage" | "exposed" | "benefit" | "related";
+  text: string;
+  bottleneck: string | null;
+  buckets: Record<string, number>;
+}
+
+function computeVerdict(cascade: CascadeResponse): Verdict {
+  // Bottleneck: L1 ticker that the most L2+ edges route through
+  const inDegree = new Map<string, number>();
+  for (const e of cascade.edges as CascadeEdge[]) {
+    if (e.hop >= 2) inDegree.set(e.from, (inDegree.get(e.from) ?? 0) + 1);
+  }
+  let bottleneck: string | null = null;
+  const totalL2 = cascade.edges.filter((e) => e.hop >= 2).length || 1;
+  for (const [k, v] of inDegree) {
+    if (v / totalL2 >= 0.4 && v >= 2 && (!bottleneck || v > (inDegree.get(bottleneck) ?? 0))) {
+      bottleneck = k;
+    }
+  }
+
+  // Risk score
+  let total = 0;
+  for (const n of cascade.nodes) {
+    total += (n.cascade_score ?? 0) * Math.pow(0.7, Math.max(0, (n.hop ?? 1) - 1));
+  }
+  const riskScore = Math.min(100, Math.round(total * 12));
+
+  // Polarity buckets
+  const buckets: Record<string, number> = { damage: 0, exposed: 0, benefit: 0, related: 0 };
+  for (const n of cascade.nodes) {
+    const p = POLARITY[n.relationship_type] ?? "related";
+    buckets[p] += 1;
+  }
+  const dominant = Object.entries(buckets).sort((a, b) => b[1] - a[1])[0][0] as Verdict["tone"];
+  const totalNodes = cascade.nodes.length;
+  const dominantPct = totalNodes ? Math.round((buckets[dominant] / totalNodes) * 100) : 0;
+
+  const isFallback = cascade.fallback === "related_events";
+
+  let text: string;
+  if (isFallback) {
+    text = `${totalNodes} semantically related events. Root ticker is outside the supply-chain graph.`;
+  } else if (bottleneck) {
+    text = `${dominantPct}% of L1 second-order routing concentrates through ${bottleneck}.`;
+  } else if (dominant === "damage") {
+    text = `${buckets.damage} downstream tickers absorb the shock (suppliers + sector cohort).`;
+  } else if (dominant === "benefit") {
+    text = `${buckets.benefit} substitutes positioned to benefit from the shock.`;
+  } else {
+    text = `${totalNodes}-node cascade across ${Object.values(buckets).filter((v) => v > 0).length} relationship types.`;
+  }
+
+  return { riskScore, tone: isFallback ? "related" : dominant, text, bottleneck, buckets };
+}
 
 const GROUP_LABEL: Record<string, string> = {
   supplier: "Direct suppliers",
@@ -120,7 +200,11 @@ export function Cascade() {
             </div>
           )}
 
-          {selectedId && !loading && cascade && (
+          {selectedId && !loading && cascade && (() => {
+            const verdict = computeVerdict(cascade);
+            const verdictColor = POLARITY_COLOR[verdict.tone];
+            const isFallback = cascade.fallback === "related_events";
+            return (
             <>
               {/* Root */}
               <div className="border-b border-white/5 px-4 py-3">
@@ -138,6 +222,59 @@ export function Cascade() {
                     <span className="text-[10px] text-muted">· {cascade.root.sector}</span>
                   )}
                 </div>
+              </div>
+
+              {/* Verdict — single sentence summary + risk meter */}
+              <div className="border-b border-white/5 px-4 py-3">
+                <div className="flex items-start gap-3">
+                  {!isFallback && (
+                    <div className="flex shrink-0 flex-col items-center gap-0.5 border-r border-white/10 pr-3">
+                      <div className="mono text-[8px] uppercase tracking-widest text-muted">risk</div>
+                      <div className="mono text-[22px] font-bold leading-none tabular-nums" style={{ color: verdictColor }}>
+                        {verdict.riskScore}
+                      </div>
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="mono text-[9px] uppercase tracking-widest" style={{ color: verdictColor }}>
+                      {POLARITY_LABEL[verdict.tone]}
+                    </div>
+                    <div className="mt-0.5 text-[11px] leading-snug text-text/90">{verdict.text}</div>
+                  </div>
+                </div>
+                {/* Polarity stack bar */}
+                {!isFallback && (
+                  <div className="mt-2.5 space-y-1">
+                    <div className="flex h-1.5 overflow-hidden rounded-full bg-white/[0.04]">
+                      {(["damage", "exposed", "benefit", "related"] as const).map((p) => {
+                        const n = verdict.buckets[p];
+                        if (!n) return null;
+                        const total = cascade.nodes.length || 1;
+                        return (
+                          <div key={p} style={{ width: `${(n / total) * 100}%`, background: POLARITY_COLOR[p] }} />
+                        );
+                      })}
+                    </div>
+                    <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 text-[9px] uppercase tracking-wider">
+                      {(["damage", "exposed", "benefit", "related"] as const).map((p) => {
+                        const n = verdict.buckets[p];
+                        if (!n) return null;
+                        return (
+                          <span key={p} className="flex items-center gap-1" style={{ color: POLARITY_COLOR[p] }}>
+                            <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: POLARITY_COLOR[p] }} />
+                            {p} <span className="tabular-nums opacity-70">{n}</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {verdict.bottleneck && (
+                  <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-critical/15 px-2 py-0.5 text-[9px] uppercase tracking-wider text-critical">
+                    <span className="h-1.5 w-1.5 rounded-full bg-critical pulse-soft" />
+                    bottleneck · {verdict.bottleneck}
+                  </div>
+                )}
               </div>
 
               {/* Hop summary (only when real cascade) */}
@@ -169,6 +306,7 @@ export function Cascade() {
               {/* Nodes — grouped by relationship type */}
               <ul className="thin-scroll flex-1 min-h-0 overflow-y-auto">
                 {groupByRelationship(cascade.nodes).map(([rel, group]) => {
+                  const isBottleneckTicker = (t: string) => t === verdict.bottleneck;
                   const color = REL_COLOR[rel] ?? "var(--text-muted)";
                   return (
                     <li key={rel} className="border-b border-white/[0.04]">
@@ -205,6 +343,11 @@ export function Cascade() {
                               </span>
                               <span className="mono font-semibold tracking-wider text-text">{n.ticker}</span>
                               <span className="truncate text-muted">{n.company}</span>
+                              {isBottleneckTicker(n.ticker) && (
+                                <span className="mono shrink-0 rounded-full bg-critical/20 px-1.5 py-0.5 text-[8px] uppercase tracking-wider text-critical" title="Bottleneck — most L2 routing flows through this ticker">
+                                  bottleneck
+                                </span>
+                              )}
                               <span className="mono ml-auto tabular-nums text-accent text-[11px]">
                                 {n.cascade_score.toFixed(2)}
                               </span>
@@ -222,7 +365,8 @@ export function Cascade() {
                 })}
               </ul>
             </>
-          )}
+            );
+          })()}
     </motion.aside>
   );
 }

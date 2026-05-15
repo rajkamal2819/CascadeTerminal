@@ -198,7 +198,7 @@ html, body {
 
 /* -------------------------------------------------------------- accent left bar (critical rows) */
 .accent-bar-critical {
-  box-shadow: inset 2px 0 0 var(--critical);
+  box-shadow: inset 3px 0 0 var(--critical), inset 0 0 28px -20px var(--critical-glow);
 }
 .accent-bar-high {
   box-shadow: inset 2px 0 0 var(--high);

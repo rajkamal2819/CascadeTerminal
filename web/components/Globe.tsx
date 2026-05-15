@@ -68,6 +68,26 @@ const REL_COLOR: Record<string, string> = {
   semantic: "#94a3b8",
 };
 
+// Polarity model — how a NEGATIVE shock at the root propagates through this edge.
+//   damage  — red    : supplier loses orders, sector cohort sells off
+//   exposed — amber  : customer or peer with mixed exposure
+//   benefit — green  : substitute / derivative play that *wins*
+//   related — grey   : semantic, direction unknown
+const POLARITY: Record<string, "damage" | "exposed" | "benefit" | "related"> = {
+  supplier: "damage",
+  sector: "damage",
+  customer: "exposed",
+  peer: "exposed",
+  derivative: "benefit",
+  semantic: "related",
+};
+const POLARITY_COLOR: Record<string, string> = {
+  damage: "#ff4d6d",
+  exposed: "#fbbf24",
+  benefit: "#4ade80",
+  related: "#94a3b8",
+};
+
 const IMPACT_COLOR: Record<string, string> = {
   critical: "#ff4d6d",
   high: "#fbbf24",
@@ -122,25 +142,61 @@ export function Globe() {
     });
   }, [events]);
 
-  // Cascade arcs.
+  // Cascade arcs — polarity-coloured. Gradient runs from root colour (red) to
+  // the destination polarity colour, so the eye reads damage propagating *outward*.
   const arcs = useMemo(() => {
     if (!cascade) return [];
     return cascade.edges.slice(0, 80).map((edge) => {
       const from = HQ[edge.from] ?? DEFAULT_HQ;
       const to = HQ[edge.to] ?? DEFAULT_HQ;
+      const polarity = POLARITY[edge.type] ?? "related";
+      const destColor = POLARITY_COLOR[polarity];
       return {
         startLat: from.lat,
         startLng: from.lng,
         endLat: to.lat,
         endLng: to.lng,
-        color: [REL_COLOR[edge.type] ?? "#ffffff", REL_COLOR[edge.type] ?? "#ffffff"],
-        stroke: 0.4 + edge.weight * 0.45,
+        // Gradient: red root → polarity destination
+        color: edge.hop === 1 ? ["#ff4d6d", destColor] : [destColor, destColor],
+        stroke: 0.45 + edge.weight * 0.55,
         hop: edge.hop,
+        polarity,
       };
     });
   }, [cascade]);
 
-  // Halos for root + cascade tickers.
+  // Concentration ring — when ≥ 40% of cascade HQs cluster in one region,
+  // draw a large slow-pulsing ring around the centroid. Tells the user
+  // "this cascade is geographically concentrated" at a glance.
+  const concentrationRing = useMemo(() => {
+    if (!cascade || cascade.nodes.length < 3) return null;
+    // Bucket by 30°×30° lat-lng cells (continental scale)
+    const buckets = new Map<string, { lats: number[]; lngs: number[]; count: number }>();
+    const allTickers = [...cascade.root.tickers, ...cascade.nodes.map((n) => n.ticker)];
+    for (const t of allTickers) {
+      const hq = HQ[t];
+      if (!hq) continue;
+      const key = `${Math.floor(hq.lat / 30)}_${Math.floor(hq.lng / 30)}`;
+      const b = buckets.get(key) ?? { lats: [], lngs: [], count: 0 };
+      b.lats.push(hq.lat);
+      b.lngs.push(hq.lng);
+      b.count += 1;
+      buckets.set(key, b);
+    }
+    let best: { lats: number[]; lngs: number[]; count: number } | null = null;
+    for (const b of buckets.values()) {
+      if (!best || b.count > best.count) best = b;
+    }
+    if (!best) return null;
+    const totalKnown = [...buckets.values()].reduce((s, b) => s + b.count, 0);
+    const pct = best.count / totalKnown;
+    if (pct < 0.4 || best.count < 3) return null;
+    const cLat = best.lats.reduce((a, b) => a + b, 0) / best.lats.length;
+    const cLng = best.lngs.reduce((a, b) => a + b, 0) / best.lngs.length;
+    return { lat: cLat, lng: cLng, color: "#ff4d6d", maxR: 18, period: 4200, pct };
+  }, [cascade]);
+
+  // Halos: root + cascade tickers (polarity colour) + concentration ring.
   const rings = useMemo(() => {
     if (!cascade) return [];
     const out: Array<{ lat: number; lng: number; color: string; maxR: number; period: number }> = [];
@@ -150,16 +206,20 @@ export function Globe() {
     }
     for (const n of cascade.nodes) {
       const hq = HQ[n.ticker] ?? DEFAULT_HQ;
+      const polarity = POLARITY[n.relationship_type] ?? "related";
       out.push({
         lat: hq.lat,
         lng: hq.lng,
-        color: REL_COLOR[n.relationship_type] ?? "#ffffff",
+        color: POLARITY_COLOR[polarity],
         maxR: 2.5 + n.cascade_score * 2,
         period: 1700 + n.hop * 200,
       });
     }
+    if (concentrationRing) {
+      out.push(concentrationRing);
+    }
     return out;
-  }, [cascade]);
+  }, [cascade, concentrationRing]);
 
   // City labels — when a cascade is active, name the cities at root + node HQs.
   // When idle, label the top-impact event cities so the globe always teaches
@@ -269,6 +329,17 @@ export function Globe() {
             "radial-gradient(80% 70% at 50% 50%, transparent 60%, rgba(4,6,10,0.55) 100%)",
         }}
       />
+
+      {/* Concentration callout — only when a regional cluster is detected */}
+      {concentrationRing && cascade && (
+        <div className="pointer-events-none absolute left-1/2 bottom-20 -translate-x-1/2">
+          <div className="glass-strong inline-flex items-center gap-2 rounded-full px-3 py-1 text-[10px] uppercase tracking-widest">
+            <span className="h-1.5 w-1.5 rounded-full pulse-soft" style={{ background: "#ff4d6d", boxShadow: "0 0 8px #ff4d6d" }} />
+            <span className="text-critical">geographic concentration</span>
+            <span className="text-muted tabular-nums">{Math.round(concentrationRing.pct * 100)}%</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
