@@ -205,6 +205,60 @@ async def search_events(
     return {"events": events, "count": len(events)}
 
 
+async def _related_events_fallback(db, root_doc: dict, top_k: int = 8) -> list[dict]:
+    """
+    When $graphLookup yields nothing (ticker is outside our seed graph),
+    surface semantically similar events as pseudo-cascade nodes so the UI
+    has something useful to render.
+    """
+    root_text = root_doc.get("text") or root_doc.get("headline") or ""
+    if not root_text:
+        return []
+    try:
+        vec = await _embed_query()(root_text[:500])
+    except Exception as e:
+        log.warning("fallback embed failed: %s", e)
+        return []
+
+    pipeline = [
+        {
+            "$vectorSearch": {
+                "index": "events_vector_index",
+                "path": "embedding",
+                "queryVector": vec,
+                "numCandidates": 80,
+                "limit": top_k + 5,
+            }
+        },
+        {"$match": {"_id": {"$ne": root_doc.get("_id")}}},
+        {"$limit": top_k},
+        {"$project": {"tickers": 1, "headline": 1, "text": 1, "sector": 1, "impact": 1, "source_type": 1, "published_at": 1}},
+        {"$addFields": {"vs_score": {"$meta": "vectorSearchScore"}}},
+    ]
+    try:
+        hits = await db.events.aggregate(pipeline).to_list(length=top_k)
+    except Exception as e:
+        log.warning("fallback aggregate failed: %s", e)
+        return []
+
+    nodes = []
+    for i, h in enumerate(hits):
+        ticker = (h.get("tickers") or ["?"])[0]
+        text = (h.get("text") or "").strip()
+        why = text.split("\n", 1)[0][:160] if text else h.get("headline", "")
+        nodes.append({
+            "ticker": ticker,
+            "company": ticker,
+            "sector": h.get("sector") or "",
+            "level": f"~{i + 1}",
+            "hop": 0,
+            "relationship_type": "semantic",
+            "cascade_score": round(float(h.get("vs_score") or 0.0), 3),
+            "why": why,
+        })
+    return nodes
+
+
 async def build_cascade(
     event_id: str,
     max_hops: int = 3,
@@ -301,17 +355,29 @@ async def build_cascade(
             })
 
     if not affected:
+        # No supply-chain map for this root ticker (small-cap, GSE, or
+        # unmapped). Fall back to "related events" via vector similarity —
+        # better than a dead end. Each related event becomes a pseudo-node
+        # so the cascade panel still has something to display.
+        fallback_nodes = await _related_events_fallback(db, root_doc, top_k=top_k)
         return {
             "root": {
                 "id": event_id,
                 "headline": headline,
                 "tickers": root_tickers,
                 "impact": root_doc.get("impact", ""),
+                "sector": root_doc.get("sector", "") or "",
                 "published_at": str(root_doc.get("published_at", "")),
+                "source_type": root_doc.get("source_type", ""),
             },
-            "nodes": [],
+            "nodes": fallback_nodes,
             "edges": [],
-            "message": f"No relationships found for tickers {root_tickers} at weight >= 0.3",
+            "hop_counts": {},
+            "fallback": "related_events",
+            "message": (
+                f"{root_tickers[0] if root_tickers else 'This ticker'} isn't in our supply-chain map "
+                "(seed graph covers top 100 US tickers). Showing semantically related events instead."
+            ),
         }
 
     # Fetch company info for affected tickers

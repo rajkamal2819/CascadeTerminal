@@ -12,6 +12,7 @@ const REL_COLOR: Record<string, string> = {
   peer: "var(--peer)",
   sector: "var(--sector)",
   derivative: "#f472b6",
+  semantic: "#94a3b8",
 };
 
 const LEVEL_BG: Record<string, string> = {
@@ -57,9 +58,11 @@ export function Cascade() {
           {/* Header */}
           <div className="flex items-center justify-between border-b border-white/5 px-4 pt-3 pb-2.5">
             <div className="flex items-center gap-2">
-              <Network size={13} className="text-accent" />
+              <Network size={13} className={cascade?.fallback ? "text-muted" : "text-accent"} />
               <span className="mono text-[10px] uppercase tracking-[0.2em] text-muted">
-                Cascade · $graphLookup
+                {cascade?.fallback === "related_events"
+                  ? "Related · $vectorSearch"
+                  : "Cascade · $graphLookup"}
               </span>
             </div>
             <button
@@ -98,8 +101,8 @@ export function Cascade() {
                 </div>
               </div>
 
-              {/* Hop summary */}
-              {cascade.hop_counts && (
+              {/* Hop summary (only when real cascade) */}
+              {!cascade.fallback && cascade.hop_counts && Object.keys(cascade.hop_counts).length > 0 && (
                 <div className="flex gap-1.5 border-b border-white/5 px-4 py-2 text-[10px]">
                   {Object.entries(cascade.hop_counts).map(([lvl, n]) => (
                     <span
@@ -114,7 +117,14 @@ export function Cascade() {
               )}
 
               {cascade.message && (
-                <div className="px-4 py-3 text-xs text-muted">{cascade.message}</div>
+                <div
+                  className={
+                    "border-b border-white/5 px-4 py-2.5 text-[11px] leading-snug " +
+                    (cascade.fallback ? "bg-white/[0.03] text-muted" : "text-muted")
+                  }
+                >
+                  {cascade.message}
+                </div>
               )}
 
               {/* Nodes */}

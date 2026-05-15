@@ -42,7 +42,7 @@ from api.models import (
     WatchlistItem,
 )
 from api.search import router as search_router
-from api.sse import sse_event_generator, start_watcher, stop_watcher
+from api.sse import set_cascadable_tickers, sse_event_generator, start_watcher, stop_watcher
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -67,6 +67,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await client.admin.command("ping")
     app.state.mongo = client
     app.state.db = client[DB_NAME]
+
+    # Cache the set of tickers that have outgoing relationships — used to
+    # tell the UI which events will produce a non-empty cascade.
+    try:
+        cursor = app.state.db.relationships.distinct("from_ticker")
+        app.state.cascadable_tickers = set(await cursor)
+        set_cascadable_tickers(app.state.cascadable_tickers)
+        log.info("cascadable tickers cached: %d", len(app.state.cascadable_tickers))
+    except Exception as e:
+        log.warning("cascadable cache failed: %s", e)
+        app.state.cascadable_tickers = set()
 
     # Best-effort: change streams require a replica set. Atlas M0 is one.
     try:
@@ -131,13 +142,15 @@ async def health(db: AsyncIOMotorDatabase = Depends(get_db)) -> HealthResponse:
 # ---------------------------------------------------------------------------
 
 _HTML_TAGS = re.compile(r"<[^>]+>")
+_SEC_COMPANY = re.compile(r"^8-K\s*-\s*([^()]+?)\s*\(\d", re.IGNORECASE)
+_SEC_ITEM = re.compile(r"Item\s+(\d+\.\d+)\s*:\s*([^\n<]+)", re.IGNORECASE)
 
 
 def derive_headline(doc: dict) -> str:
     """
-    Workers don't all populate `headline` — derive it from the first
-    meaningful line of `text` when the field is missing. Strips HTML so
-    SEC EDGAR feed entries (which contain `<b>Filed:</b>` etc) read cleanly.
+    Workers don't all populate `headline` — derive a readable one from
+    `text` and `items` when missing. SEC 8-K entries get a friendly
+    "COMPANY · Item X.XX: Description" form instead of the raw feed line.
     """
     h = (doc.get("headline") or "").strip()
     if h:
@@ -145,17 +158,36 @@ def derive_headline(doc: dict) -> str:
     text = (doc.get("text") or "").strip()
     if not text:
         return ""
+
+    # SEC 8-K — extract company and Item code description.
+    if doc.get("source_type") == "sec_8k":
+        cleaned = _HTML_TAGS.sub(" ", text)
+        company = ""
+        m = _SEC_COMPANY.search(cleaned)
+        if m:
+            company = m.group(1).strip().rstrip(",").title()
+        item = ""
+        mi = _SEC_ITEM.search(cleaned)
+        if mi:
+            item = f"Item {mi.group(1)}: {mi.group(2).strip()}"
+        if company and item:
+            return f"{company} · {item}"[:200]
+        if company:
+            return f"{company} · 8-K filing"[:200]
+
+    # Fallback: first non-empty line of text, HTML stripped.
     first = text.split("\n", 1)[0]
-    first = _HTML_TAGS.sub("", first).strip()
-    return first[:200]
+    return _HTML_TAGS.sub("", first).strip()[:200]
 
 
-def _serialize_event(doc: dict) -> EventOut:
+def _serialize_event(doc: dict, cascadable: set[str] | None = None) -> EventOut:
+    tickers = doc.get("tickers", []) or []
+    has_cascade = bool(cascadable and any(t in cascadable for t in tickers))
     return EventOut(
         id=str(doc.get("_id", "")),
         headline=derive_headline(doc),
         text=doc.get("text", "") or "",
-        tickers=doc.get("tickers", []) or [],
+        tickers=tickers,
         entities=doc.get("entities", []) or [],
         sector=doc.get("sector", "") or "",
         impact=doc.get("impact", "") or "",
@@ -163,16 +195,19 @@ def _serialize_event(doc: dict) -> EventOut:
         source_url=doc.get("source_url") or doc.get("url") or "",
         published_at=doc.get("published_at"),
         ingested_at=doc.get("ingested_at"),
+        has_cascade=has_cascade,
     )
 
 
 @app.get("/events", response_model=EventList)
 async def list_events(
+    request: Request,
     ticker: str = "",
     sector: str = "",
     impact: str = "",
     hours_back: int = Query(default=24, ge=1, le=168),
     limit: int = Query(default=50, ge=1, le=200),
+    cascadable_only: bool = False,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ) -> EventList:
     since = datetime.now(timezone.utc) - timedelta(hours=hours_back)
@@ -184,14 +219,20 @@ async def list_events(
     if impact:
         q["impact"] = impact
 
+    cascadable: set[str] = getattr(request.app.state, "cascadable_tickers", set())
+    if cascadable_only and cascadable:
+        q["tickers"] = {"$in": list(cascadable)}
+
     cursor = db.events.find(q).sort("published_at", -1).limit(limit)
     docs = await cursor.to_list(length=limit)
-    events = [_serialize_event(d) for d in docs]
+    events = [_serialize_event(d, cascadable) for d in docs]
+    # Stable sort: cascadable first (within the existing time order).
+    events.sort(key=lambda e: 0 if e.has_cascade else 1)
     return EventList(events=events, count=len(events))
 
 
 @app.get("/events/{event_id}", response_model=EventOut)
-async def get_event(event_id: str, db: AsyncIOMotorDatabase = Depends(get_db)) -> EventOut:
+async def get_event(event_id: str, request: Request, db: AsyncIOMotorDatabase = Depends(get_db)) -> EventOut:
     try:
         oid = ObjectId(event_id)
     except InvalidId:
@@ -200,7 +241,8 @@ async def get_event(event_id: str, db: AsyncIOMotorDatabase = Depends(get_db)) -
     doc = await db.events.find_one({"_id": oid})
     if not doc:
         raise HTTPException(status_code=404, detail="event not found")
-    return _serialize_event(doc)
+    cascadable: set[str] = getattr(request.app.state, "cascadable_tickers", set())
+    return _serialize_event(doc, cascadable)
 
 
 # ---------------------------------------------------------------------------

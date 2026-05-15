@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { FixedSizeList } from "react-window";
 import { motion } from "framer-motion";
+import { Network } from "lucide-react";
 import { api } from "@/lib/api";
 import { useStore } from "@/lib/store";
 
@@ -30,6 +31,7 @@ export function Feed() {
   const status = useStore((s) => s.streamStatus);
 
   const [filter, setFilter] = useState<"all" | "critical" | "high">("all");
+  const [cascadableOnly, setCascadableOnly] = useState(false);
   const [height, setHeight] = useState(600);
 
   useEffect(() => {
@@ -46,10 +48,12 @@ export function Feed() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const filtered = useMemo(
-    () => (filter === "all" ? events : events.filter((e) => e.impact === filter)),
-    [events, filter]
-  );
+  const filtered = useMemo(() => {
+    let xs = events;
+    if (filter !== "all") xs = xs.filter((e) => e.impact === filter);
+    if (cascadableOnly) xs = xs.filter((e) => e.has_cascade);
+    return xs;
+  }, [events, filter, cascadableOnly]);
 
   return (
     <aside className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-2xl">
@@ -58,7 +62,7 @@ export function Feed() {
           <span className="mono uppercase tracking-[0.18em] text-muted">Stream</span>
           <StreamBadge status={status} />
         </div>
-        <div className="mt-2.5 flex gap-1.5">
+        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           {(["all", "critical", "high"] as const).map((f) => (
             <button
               key={f}
@@ -73,6 +77,19 @@ export function Feed() {
               {f}
             </button>
           ))}
+          <button
+            onClick={() => setCascadableOnly((v) => !v)}
+            title="Only show events whose tickers are in the supply-chain graph"
+            className={
+              "ml-auto inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wider transition " +
+              (cascadableOnly
+                ? "bg-accent/15 text-accent ring-1 ring-accent/30"
+                : "bg-white/[0.04] text-muted hover:text-text")
+            }
+          >
+            <Network size={10} />
+            graph
+          </button>
         </div>
       </div>
 
@@ -124,6 +141,13 @@ export function Feed() {
                   <span className="mono truncate text-[11px] font-semibold tracking-wider text-text">
                     {e.tickers.slice(0, 3).join(" · ") || e.source_type.toUpperCase()}
                   </span>
+                  {e.has_cascade && (
+                    <Network
+                      size={10}
+                      className="shrink-0 text-accent"
+                      style={{ filter: "drop-shadow(0 0 6px var(--accent-glow))" }}
+                    />
+                  )}
                   <span className="mono ml-auto shrink-0 text-[10px] tabular-nums text-muted">
                     {e.published_at
                       ? new Date(e.published_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })

@@ -33,6 +33,14 @@ _subscribers_lock = asyncio.Lock()
 _watcher_task: asyncio.Task | None = None
 
 
+_cascadable_tickers: set[str] = set()
+
+
+def set_cascadable_tickers(tickers: set[str]) -> None:
+    global _cascadable_tickers
+    _cascadable_tickers = tickers
+
+
 async def _watch_changes(db: AsyncIOMotorDatabase) -> None:
     """
     Tail the events collection change-stream and broadcast inserts to all
@@ -74,14 +82,16 @@ def _derive_headline(doc: dict[str, Any]) -> str:
 
 def _serialize_event(doc: dict[str, Any]) -> dict[str, Any]:
     """Project an event doc to a JSON-safe SSE payload."""
+    tickers = doc.get("tickers", []) or []
     return {
         "id": str(doc.get("_id", "")),
         "headline": _derive_headline(doc),
-        "tickers": doc.get("tickers", []),
+        "tickers": tickers,
         "sector": doc.get("sector") or "",
         "impact": doc.get("impact", ""),
         "source_type": doc.get("source_type", ""),
         "published_at": _iso(doc.get("published_at")),
+        "has_cascade": bool(_cascadable_tickers and any(t in _cascadable_tickers for t in tickers)),
     }
 
 

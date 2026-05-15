@@ -15,6 +15,7 @@ export type Event = {
   source_type: string;
   source_url?: string;
   published_at?: string | null;
+  has_cascade?: boolean;
 };
 
 export type EventList = {
@@ -74,6 +75,7 @@ export type CascadeResponse = {
   edges: CascadeEdge[];
   hop_counts: Record<string, number>;
   message?: string;
+  fallback?: string;
 };
 
 export type StatsResponse = {
@@ -108,7 +110,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => http<Health>("/health"),
 
-  listEvents: (params: { ticker?: string; sector?: string; impact?: string; hours_back?: number; limit?: number } = {}) => {
+  listEvents: (params: { ticker?: string; sector?: string; impact?: string; hours_back?: number; limit?: number; cascadable_only?: boolean } = {}) => {
     const q = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => v !== undefined && v !== "" && q.set(k, String(v)));
     return http<EventList>(`/events${q.toString() ? `?${q}` : ""}`);

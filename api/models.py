@@ -27,6 +27,7 @@ class EventOut(BaseModel):
     source_url: str = ""
     published_at: datetime | None = None
     ingested_at: datetime | None = None
+    has_cascade: bool = False
 
 
 class EventList(BaseModel):
@@ -103,6 +104,7 @@ class CascadeResponse(BaseModel):
     edges: list[CascadeEdge]
     hop_counts: dict[str, int] = Field(default_factory=dict)
     message: str = ""
+    fallback: str = ""
 
 
 class StatsResponse(BaseModel):
