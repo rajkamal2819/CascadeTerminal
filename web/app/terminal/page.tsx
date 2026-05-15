@@ -2,21 +2,36 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
+import { Globe2, Network } from "lucide-react";
 import { Cascade } from "@/components/Cascade";
+import { CascadeGraph } from "@/components/CascadeGraph";
 import { Feed } from "@/components/Feed";
 import { Globe } from "@/components/Globe";
+import { ResizableRail } from "@/components/ResizableRail";
 import { SearchBar } from "@/components/SearchBar";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { api, type StatsResponse } from "@/lib/api";
 import { useLiveEvents } from "@/lib/sse";
 import { useStore } from "@/lib/store";
 
+type ViewMode = "globe" | "graph";
+
+const EXAMPLE_QUERIES = [
+  { label: "Taiwan Strait tensions", query: "Taiwan Strait geopolitical risk semiconductor supply" },
+  { label: "OPEC supply cut", query: "OPEC production cut oil price energy" },
+  { label: "AI capex slowdown", query: "AI capex slowdown NVIDIA hyperscaler demand" },
+  { label: "Fed rate decision", query: "Federal Reserve rate decision inflation markets" },
+];
+
 export default function TerminalPage() {
   useLiveEvents();
   const [stats, setStats] = useState<StatsResponse | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("globe");
+  const events = useStore((s) => s.events);
   const selectEvent = useStore((s) => s.selectEvent);
   const selectedId = useStore((s) => s.selectedEventId);
+  const cascade = useStore((s) => s.cascade);
 
   useEffect(() => {
     let alive = true;
@@ -27,20 +42,66 @@ export default function TerminalPage() {
         .catch(() => {});
     tick();
     const id = setInterval(tick, 30_000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
+    return () => { alive = false; clearInterval(id); };
   }, []);
+
+  // Auto-switch to graph view when cascade loads with real nodes
+  useEffect(() => {
+    if (cascade && cascade.nodes.length > 0) setViewMode("graph");
+  }, [cascade]);
+
+  // ⌘K / "/" → focus search
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      const target = ev.target as HTMLElement | null;
+      const inField = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k") || (!inField && ev.key === "/")) {
+        ev.preventDefault();
+        (document.getElementById("cascade-search") as HTMLInputElement | null)?.focus();
+      }
+      // G = globe, C = graph
+      if (!inField && ev.key.toLowerCase() === "g") setViewMode("globe");
+      if (!inField && ev.key.toLowerCase() === "c") setViewMode("graph");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const showHero = events.length === 0;
 
   return (
     <main className="terminal-bg relative h-screen overflow-hidden text-text">
-      {/* Full-bleed Globe behind everything */}
+
+      {/* ── Center canvas: Globe or CascadeGraph ── */}
       <div className="absolute inset-0">
-        <Globe />
+        <AnimatePresence mode="wait">
+          {viewMode === "globe" ? (
+            <motion.div
+              key="globe"
+              className="absolute inset-0"
+              initial={{ opacity: 0, scale: 1.04 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.96 }}
+              transition={{ duration: 0.45, ease: "easeInOut" }}
+            >
+              <Globe />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="graph"
+              className="absolute inset-0 flex items-center justify-center"
+              initial={{ opacity: 0, scale: 0.94 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 1.04 }}
+              transition={{ duration: 0.45, ease: "easeInOut" }}
+            >
+              <CascadeGraph />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
-      {/* Top bar — floats */}
+      {/* ── Top bar ── */}
       <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-4 px-4 py-3">
         <div className="pointer-events-auto flex items-center gap-3">
           <Link
@@ -50,54 +111,117 @@ export default function TerminalPage() {
             <span className="h-1.5 w-1.5 rounded-full bg-accent pulse-soft" style={{ boxShadow: "0 0 10px var(--accent-glow)" }} />
             CASCADE
           </Link>
-          <span className="hidden text-[10px] uppercase tracking-[0.2em] text-muted sm:inline">terminal</span>
+          <span className="hidden text-[10px] uppercase tracking-[0.2em] text-muted sm:inline">
+            news · geopolitics · markets
+          </span>
         </div>
-        <div className="pointer-events-auto flex-1 flex justify-center">
-          <SearchBar
-            onResults={(hits) => {
-              if (hits[0]) selectEvent(hits[0].id);
-            }}
-          />
+
+        <div className="pointer-events-auto flex flex-1 justify-center">
+          <SearchBar onResults={(hits) => { if (hits[0]) selectEvent(hits[0].id); }} />
         </div>
+
         <div className="pointer-events-auto flex items-center gap-2">
+          {/* View-mode toggle */}
+          <div className="glass flex items-center gap-0.5 rounded-full p-0.5">
+            <button
+              onClick={() => setViewMode("globe")}
+              title="Globe view (G)"
+              className={
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] uppercase tracking-wider transition " +
+                (viewMode === "globe" ? "bg-accent/20 text-accent" : "text-muted hover:text-text")
+              }
+            >
+              <Globe2 size={12} />
+              <span className="hidden sm:inline">Globe</span>
+            </button>
+            <button
+              onClick={() => setViewMode("graph")}
+              title="Graph view (C)"
+              className={
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] uppercase tracking-wider transition " +
+                (viewMode === "graph" ? "bg-accent/20 text-accent" : "text-muted hover:text-text")
+              }
+            >
+              <Network size={12} />
+              <span className="hidden sm:inline">Graph</span>
+            </button>
+          </div>
           <ThemeToggle />
         </div>
       </header>
 
-      {/* Left Feed rail — floats */}
+      {/* ── Left Feed rail — always open ── */}
       <motion.aside
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.35, delay: 0.05 }}
-        className="pointer-events-auto absolute bottom-12 left-3 top-16 z-10 hidden w-[320px] md:block"
+        className="pointer-events-auto absolute bottom-12 left-3 top-16 z-10 hidden md:block"
       >
-        <Feed />
+        <ResizableRail side="left" defaultWidth={340} className="h-full">
+          <Feed />
+        </ResizableRail>
       </motion.aside>
 
-      {/* Right Cascade card — AnimatePresence inside, only renders when selected */}
-      <div className={
-        "pointer-events-auto absolute bottom-12 right-3 top-16 z-10 hidden w-[340px] md:block " +
-        (selectedId ? "" : "pointer-events-none")
-      }>
-        <Cascade />
-      </div>
+      {/* ── Right Cascade rail — always open ── */}
+      <motion.aside
+        initial={{ opacity: 0, x: 20 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ duration: 0.35, delay: 0.1 }}
+        className="pointer-events-auto absolute bottom-12 right-3 top-16 z-10 hidden md:block"
+      >
+        <ResizableRail side="right" defaultWidth={360} className="h-full">
+          <Cascade />
+        </ResizableRail>
+      </motion.aside>
 
-      {/* Empty-state nudge over globe when nothing is selected */}
-      {!selectedId && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.4, delay: 0.5 }}
-          className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-center"
-        >
-          <div className="mono text-[10px] uppercase tracking-[0.4em] text-muted">
-            select an event ↗ to walk its cascade
+      {/* ── Hero (empty state — no events loaded yet) ── */}
+      <AnimatePresence>
+        {showHero && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.4, delay: 0.3 }}
+            className="pointer-events-none absolute left-1/2 top-1/2 z-10 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 px-6 text-center"
+          >
+            <div className="glass pointer-events-auto rounded-2xl px-6 py-5">
+              <div className="mono text-[10px] uppercase tracking-[0.4em] text-muted">cascade terminal</div>
+              <div className="mt-1 text-[14px] text-text">Real-time news, geopolitics &amp; market cascade intelligence</div>
+              <div className="mt-1 text-[11px] text-muted">$graphLookup · voyage rerank-2.5 · gemini</div>
+              <div className="mt-4 mono text-[9px] uppercase tracking-widest text-muted/70">try a query</div>
+              <div className="mt-1.5 flex flex-wrap justify-center gap-1.5">
+                {EXAMPLE_QUERIES.map((q) => (
+                  <button
+                    key={q.label}
+                    onClick={() => window.dispatchEvent(new CustomEvent("cascade:search", { detail: q.query }))}
+                    className="rounded-full bg-white/[0.04] px-3 py-1 text-[11px] text-text/85 hover:bg-accent/15 hover:text-accent transition"
+                  >
+                    {q.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Nudge — events loaded, nothing selected ── */}
+      {!showHero && !selectedId && (
+        <div className="pointer-events-none absolute bottom-20 left-1/2 -translate-x-1/2 text-center">
+          <div className="mono text-[10px] uppercase tracking-[0.35em] text-muted/60">
+            click an event to walk its cascade
           </div>
-          <div className="mt-1 text-[10px] text-muted/60">$graphLookup · voyage rerank-2.5 · gemini 3</div>
-        </motion.div>
+          <div className="mt-1 flex items-center justify-center gap-2 text-[9px] text-muted/40">
+            <span><span className="kbd">j</span><span className="kbd ml-0.5">k</span> navigate</span>
+            <span>·</span>
+            <span><span className="kbd">/</span> search</span>
+            <span>·</span>
+            <span><span className="kbd">G</span> globe <span className="kbd ml-0.5">C</span> graph</span>
+          </div>
+        </div>
       )}
 
-      {/* Bottom stats strip — floats */}
+      {/* ── Bottom stats strip ── */}
       <footer className="pointer-events-none absolute inset-x-0 bottom-0 z-20 px-3 pb-3">
         <div className="glass mono mx-auto flex max-w-5xl items-center justify-between gap-5 rounded-full px-4 py-1.5 text-[10px] uppercase tracking-wider text-muted">
           <div className="flex flex-wrap gap-x-5 gap-y-1">
@@ -106,13 +230,11 @@ export default function TerminalPage() {
             <Stat label="critical" value={stats?.impact_counts?.critical ?? 0} color="var(--critical)" />
             <Stat label="high" value={stats?.impact_counts?.high ?? 0} color="var(--high)" />
           </div>
-          <div className="hidden text-muted sm:block">
-            mongo atlas · voyage · gemini 3
-          </div>
+          <div className="hidden text-muted sm:block">mongo atlas · voyage · gemini</div>
         </div>
       </footer>
 
-      {/* Mobile: stack feed below globe */}
+      {/* ── Mobile: stack ── */}
       <div className="absolute inset-x-2 bottom-12 top-16 z-10 md:hidden">
         <div className="grid h-full grid-rows-2 gap-2">
           <div className="min-h-0"><Feed /></div>
@@ -127,9 +249,7 @@ function Stat({ label, value, color }: { label: string; value: number | undefine
   return (
     <span className="inline-flex items-baseline gap-1.5">
       <span>{label}</span>
-      <span className="tabular-nums text-text" style={color ? { color } : undefined}>
-        {value ?? "—"}
-      </span>
+      <span className="tabular-nums text-text" style={color ? { color } : undefined}>{value ?? "—"}</span>
     </span>
   );
 }

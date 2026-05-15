@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { FixedSizeList } from "react-window";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FixedSizeList, type FixedSizeList as FixedSizeListType } from "react-window";
 import { motion } from "framer-motion";
 import { ChevronDown, Network, SlidersHorizontal, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useStore } from "@/lib/store";
 
-const ROW_HEIGHT = 56;
+const ROW_HEIGHT = 60;
 
 const IMPACT_DOT: Record<string, string> = {
   critical: "var(--critical)",
@@ -36,27 +36,43 @@ const SOURCE_LABEL: Record<string, string> = {
 
 // Sector palette — each sector gets a subtle hue so the chip rail reads at a glance.
 const SECTOR_COLOR: Record<string, string> = {
-  "Technology": "#60a5fa",
-  "Financials": "#4ade80",
-  "Healthcare": "#f472b6",
-  "Energy": "#fbbf24",
-  "Industrials": "#fb923c",
+  Technology: "#60a5fa",
+  Financials: "#4ade80",
+  Healthcare: "#f472b6",
+  Energy: "#fbbf24",
+  Industrials: "#fb923c",
   "Consumer Discretionary": "#c084fc",
   "Consumer Staples": "#22d3ee",
   "Communication Services": "#a78bfa",
-  "Materials": "#84cc16",
-  "Utilities": "#facc15",
+  Materials: "#84cc16",
+  Utilities: "#facc15",
   "Real Estate": "#f87171",
+  Geopolitics: "#ef4444",
+  Macro: "#94a3b8",
+  Crypto: "#a855f7",
 };
 
-const TIME_WINDOWS = [
-  { label: "1h", hours: 1 },
-  { label: "6h", hours: 6 },
-  { label: "24h", hours: 24 },
-  { label: "7d", hours: 168 },
-] as const;
-
 type Impact = "all" | "critical" | "high";
+type Sort = "newest" | "impact";
+
+// Always pull the widest reasonable window — "latest" means latest across
+// everything we have. UX-wise the user no longer thinks in time, they think
+// in categories + impact.
+const DEFAULT_HOURS = 720;
+
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (!t) return "";
+  const diff = Math.max(0, Date.now() - t);
+  const m = Math.floor(diff / 60_000);
+  if (m < 1) return "now";
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  return `${d}d`;
+}
 
 export function Feed() {
   const events = useStore((s) => s.events);
@@ -67,30 +83,42 @@ export function Feed() {
 
   const [impact, setImpact] = useState<Impact>("all");
   const [cascadableOnly, setCascadableOnly] = useState(false);
-  const [hoursBack, setHoursBack] = useState<number>(168);
   const [sectorFilter, setSectorFilter] = useState<string>("");
   const [sourceFilter, setSourceFilter] = useState<string>("");
+  const [sort, setSort] = useState<Sort>("newest");
   const [showFilters, setShowFilters] = useState(false);
   const [height, setHeight] = useState(600);
+  const listRef = useRef<FixedSizeListType<unknown> | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
 
   // Fetch whenever any server-driven filter changes.
   useEffect(() => {
     api
       .listEvents({
-        hours_back: hoursBack,
-        limit: 150,
+        hours_back: DEFAULT_HOURS,
+        limit: 200,
         sector: sectorFilter || undefined,
         source_type: sourceFilter || undefined,
       })
       .then((res) => setEvents(res.events))
       .catch(() => {});
-  }, [setEvents, hoursBack, sectorFilter, sourceFilter]);
+  }, [setEvents, sectorFilter, sourceFilter]);
 
   useEffect(() => {
-    const onResize = () => setHeight(Math.max(300, window.innerHeight - 280));
-    onResize();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    const measure = () => {
+      const headerH = headerRef.current?.getBoundingClientRect().height ?? 0;
+      const aside = headerRef.current?.parentElement;
+      const containerH = aside?.getBoundingClientRect().height ?? window.innerHeight - 120;
+      setHeight(Math.max(220, containerH - headerH - 8));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (headerRef.current?.parentElement) ro.observe(headerRef.current.parentElement);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
   }, []);
 
   // Client-side filters (cheap, no roundtrip)
@@ -98,10 +126,14 @@ export function Feed() {
     let xs = events;
     if (impact !== "all") xs = xs.filter((e) => e.impact === impact);
     if (cascadableOnly) xs = xs.filter((e) => e.has_cascade);
+    if (sort === "impact") {
+      const w: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
+      xs = [...xs].sort((a, b) => (w[b.impact] ?? 0) - (w[a.impact] ?? 0));
+    }
     return xs;
-  }, [events, impact, cascadableOnly]);
+  }, [events, impact, cascadableOnly, sort]);
 
-  // Sector chip counts derived from currently-loaded events (post-enrichment).
+  // Sector chip counts derived from currently-loaded events.
   const sectorCounts = useMemo(() => {
     const map = new Map<string, number>();
     for (const e of events) {
@@ -130,19 +162,47 @@ export function Feed() {
   if (sourceFilter)
     activeFilters.push({ key: "source", label: SOURCE_LABEL[sourceFilter] ?? sourceFilter, clear: () => setSourceFilter("") });
 
-  function clearAll() {
+  const clearAll = useCallback(() => {
     setImpact("all");
     setCascadableOnly(false);
     setSectorFilter("");
     setSourceFilter("");
-  }
+  }, []);
+
+  // ---------- Keyboard navigation: j/k traverse, Enter selects, Esc clears, 1-4 windows ----------
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      const target = ev.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+
+      if (ev.key === "j" || ev.key === "k") {
+        ev.preventDefault();
+        const idx = filtered.findIndex((e) => e.id === selectedId);
+        const nextIdx =
+          ev.key === "j"
+            ? Math.min(filtered.length - 1, idx < 0 ? 0 : idx + 1)
+            : Math.max(0, idx < 0 ? 0 : idx - 1);
+        const next = filtered[nextIdx];
+        if (next) {
+          selectEvent(next.id);
+          listRef.current?.scrollToItem(nextIdx, "smart");
+        }
+      } else if (ev.key === "Escape") {
+        selectEvent(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [filtered, selectedId, selectEvent]);
+
+  const emptyFiltered = filtered.length === 0;
 
   return (
     <aside className="glass flex h-full min-h-0 flex-col overflow-hidden rounded-2xl">
       {/* Header */}
-      <div className="border-b border-white/5 px-3 pt-3 pb-2">
+      <div ref={headerRef} className="border-b border-white/5 px-3 pt-3 pb-2">
         <div className="flex items-center justify-between text-[11px]">
-          <span className="mono uppercase tracking-[0.18em] text-muted">Stream</span>
+          <span className="mono uppercase tracking-[0.18em] text-muted">Live feed</span>
           <StreamBadge status={status} />
         </div>
 
@@ -177,22 +237,48 @@ export function Feed() {
           </button>
         </div>
 
-        {/* Time window */}
+        {/* Category quick-pick — top 5 categories from current feed */}
+        {sectorCounts.length > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            <span className="mono text-[9px] uppercase tracking-widest text-muted">category</span>
+            {sectorCounts.slice(0, 5).map(([s, n]) => {
+              const active = sectorFilter === s;
+              const color = SECTOR_COLOR[s] ?? "var(--text-muted)";
+              return (
+                <button
+                  key={s}
+                  onClick={() => setSectorFilter(active ? "" : s)}
+                  className={
+                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] transition " +
+                    (active ? "bg-white/10 text-text ring-1 ring-white/15" : "bg-white/[0.03] text-muted hover:bg-white/[0.07]")
+                  }
+                  style={active ? { boxShadow: `inset 0 0 0 1px ${color}`, color } : undefined}
+                >
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
+                  <span>{shortSector(s)}</span>
+                  <span className="tabular-nums opacity-60">{n}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Sort toggle */}
         <div className="mt-2 flex items-center gap-1.5">
-          <span className="mono text-[9px] uppercase tracking-widest text-muted">window</span>
+          <span className="mono text-[9px] uppercase tracking-widest text-muted">sort</span>
           <div className="flex flex-1 gap-1">
-            {TIME_WINDOWS.map((w) => (
+            {(["newest", "impact"] as const).map((s) => (
               <button
-                key={w.label}
-                onClick={() => setHoursBack(w.hours)}
+                key={s}
+                onClick={() => setSort(s)}
                 className={
-                  "flex-1 rounded-md py-0.5 text-[10px] tabular-nums transition " +
-                  (hoursBack === w.hours
+                  "flex-1 rounded-md py-0.5 text-[10px] uppercase tracking-wider transition " +
+                  (sort === s
                     ? "bg-white/10 text-text ring-1 ring-white/15"
                     : "bg-white/[0.03] text-muted hover:text-text")
                 }
               >
-                {w.label}
+                {s}
               </button>
             ))}
           </div>
@@ -207,20 +293,16 @@ export function Feed() {
             <SlidersHorizontal size={11} />
             categories · sources
           </span>
-          <ChevronDown
-            size={12}
-            className={"transition " + (showFilters ? "rotate-180" : "")}
-          />
+          <ChevronDown size={12} className={"transition " + (showFilters ? "rotate-180" : "")} />
         </button>
 
         {showFilters && (
           <div className="mt-1.5 space-y-2">
-            {/* Sectors */}
-            <FilterGroup label="sector">
+            <FilterGroup label="sector / category">
               {sectorCounts.length === 0 ? (
                 <span className="text-[10px] text-muted">no data</span>
               ) : (
-                sectorCounts.slice(0, 8).map(([s, n]) => {
+                sectorCounts.slice(0, 10).map(([s, n]) => {
                   const active = sectorFilter === s;
                   const color = SECTOR_COLOR[s] ?? "var(--text-muted)";
                   return (
@@ -229,9 +311,7 @@ export function Feed() {
                       onClick={() => setSectorFilter(active ? "" : s)}
                       className={
                         "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] transition " +
-                        (active
-                          ? "bg-white/10 ring-1 text-text"
-                          : "bg-white/[0.03] text-muted hover:bg-white/[0.07]")
+                        (active ? "bg-white/10 text-text" : "bg-white/[0.03] text-muted hover:bg-white/[0.07]")
                       }
                       style={active ? { boxShadow: `inset 0 0 0 1px ${color}`, color } : undefined}
                     >
@@ -244,7 +324,6 @@ export function Feed() {
               )}
             </FilterGroup>
 
-            {/* Sources */}
             <FilterGroup label="source">
               {sourceCounts.length === 0 ? (
                 <span className="text-[10px] text-muted">no data</span>
@@ -272,7 +351,6 @@ export function Feed() {
           </div>
         )}
 
-        {/* Active filter strip */}
         {activeFilters.length > 0 && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-white/5 pt-2">
             <span className="mono text-[9px] uppercase tracking-widest text-muted">active</span>
@@ -286,18 +364,15 @@ export function Feed() {
                 <X size={10} />
               </button>
             ))}
-            <button
-              onClick={clearAll}
-              className="ml-auto rounded px-1.5 py-0.5 text-[10px] text-muted hover:text-text"
-            >
+            <button onClick={clearAll} className="ml-auto rounded px-1.5 py-0.5 text-[10px] text-muted hover:text-text">
               clear
             </button>
           </div>
         )}
       </div>
 
-      {filtered.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center px-4 text-center text-[11px] text-muted">
+      {emptyFiltered ? (
+        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center text-[11px] text-muted">
           No events match these filters.
           {activeFilters.length > 0 && (
             <button onClick={clearAll} className="ml-1 underline hover:text-text">
@@ -307,6 +382,7 @@ export function Feed() {
         </div>
       ) : (
         <FixedSizeList
+          ref={listRef as never}
           className="thin-scroll"
           height={height}
           width={"100%"}
@@ -318,6 +394,8 @@ export function Feed() {
             const e = filtered[index];
             const selected = e.id === selectedId;
             const sectorColor = e.sector ? SECTOR_COLOR[e.sector] : undefined;
+            const isCritical = e.impact === "critical";
+            const isHigh = e.impact === "high";
             return (
               <motion.div
                 key={e.id}
@@ -328,10 +406,14 @@ export function Feed() {
                 onClick={() => selectEvent(e.id)}
                 className={
                   "group cursor-pointer border-b border-white/[0.04] px-3 py-2 text-xs transition " +
-                  (selected ? "bg-accent/10 ring-1 ring-inset ring-accent/40" : "hover:bg-white/[0.03]")
+                  (selected
+                    ? "bg-accent/10 ring-1 ring-inset ring-accent/40"
+                    : "hover:bg-white/[0.03]") +
+                  " " +
+                  (isCritical ? "accent-bar-critical" : isHigh ? "accent-bar-high" : "")
                 }
               >
-                <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-2">
                   <span className="relative inline-flex h-2 w-2 shrink-0">
                     <span
                       className="h-2 w-2 rounded-full"
@@ -340,16 +422,37 @@ export function Feed() {
                         boxShadow: `0 0 10px ${IMPACT_GLOW[e.impact] ?? "transparent"}`,
                       }}
                     />
-                    {(e.impact === "critical" || e.impact === "high") && (
+                    {(isCritical || isHigh) && (
                       <span
                         className="pulse-ring absolute inset-0 rounded-full"
                         style={{ border: `1px solid ${IMPACT_DOT[e.impact]}` }}
                       />
                     )}
                   </span>
-                  <span className="mono truncate text-[11px] font-semibold tracking-wider text-text">
-                    {e.tickers.slice(0, 3).join(" · ") || e.source_type.toUpperCase()}
+                  <span
+                    className={
+                      "mono shrink-0 tracking-wider text-text " +
+                      (isCritical ? "text-[12px] font-bold" : "text-[11px] font-semibold")
+                    }
+                  >
+                    {e.tickers.slice(0, 2).join(" · ") || e.source_type.toUpperCase()}
                   </span>
+                  {e.sector && (
+                    <span
+                      className="shrink-0 rounded px-1 py-px text-[8.5px] uppercase tracking-wider"
+                      style={{
+                        background: sectorColor ? `${sectorColor}1a` : "rgba(255,255,255,0.04)",
+                        color: sectorColor ?? "var(--text-muted)",
+                      }}
+                    >
+                      {shortSector(e.sector)}
+                    </span>
+                  )}
+                  {e.source_type && (
+                    <span className="shrink-0 text-[9px] uppercase tracking-wider text-muted/70">
+                      {SOURCE_LABEL[e.source_type] ?? e.source_type}
+                    </span>
+                  )}
                   {e.has_cascade && (
                     <Network
                       size={10}
@@ -358,34 +461,35 @@ export function Feed() {
                     />
                   )}
                   <span className="mono ml-auto shrink-0 text-[10px] tabular-nums text-muted">
-                    {e.published_at
-                      ? new Date(e.published_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                      : ""}
+                    {relativeTime(e.published_at)}
                   </span>
                 </div>
-                <div className="mt-1 line-clamp-2 text-[11px] leading-snug text-muted group-hover:text-text/80">
+                <div
+                  className={
+                    "mt-1 line-clamp-2 leading-snug text-muted group-hover:text-text/80 " +
+                    (isCritical ? "text-[12px] text-text/90" : "text-[11px]")
+                  }
+                >
                   {e.headline || e.source_type}
                 </div>
-                {(e.sector || e.source_type) && (
-                  <div className="mt-1 flex items-center gap-1.5 text-[9px] uppercase tracking-wider">
-                    {e.sector && (
-                      <span
-                        className="inline-flex items-center gap-1 rounded px-1.5 py-px"
-                        style={{ background: sectorColor ? `${sectorColor}1a` : "rgba(255,255,255,0.04)", color: sectorColor ?? "var(--text-muted)" }}
-                      >
-                        {shortSector(e.sector)}
-                      </span>
-                    )}
-                    {e.source_type && (
-                      <span className="text-muted/70">{SOURCE_LABEL[e.source_type] ?? e.source_type}</span>
-                    )}
-                  </div>
-                )}
               </motion.div>
             );
           }}
         </FixedSizeList>
       )}
+
+      {/* Footer hint */}
+      <div className="mono flex items-center justify-between border-t border-white/5 px-3 py-1.5 text-[9px] uppercase tracking-widest text-muted/70">
+        <span className="flex items-center gap-1">
+          <span className="kbd">j</span>
+          <span className="kbd">k</span>
+          <span className="ml-1">navigate</span>
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="kbd">/</span>
+          <span>search</span>
+        </span>
+      </div>
     </aside>
   );
 }
@@ -402,9 +506,9 @@ function FilterGroup({ label, children }: { label: string; children: React.React
 function shortSector(s: string): string {
   const map: Record<string, string> = {
     "Communication Services": "Comm",
-    "Consumer Discretionary": "Consumer Disc",
+    "Consumer Discretionary": "Cons Disc",
     "Consumer Staples": "Staples",
-    "Real Estate": "Real Est",
+    "Real Estate": "RealEst",
     Uncategorized: "Other",
   };
   return map[s] ?? s;

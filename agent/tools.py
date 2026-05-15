@@ -251,7 +251,7 @@ async def _related_events_fallback(db, root_doc: dict, top_k: int = 8) -> list[d
             "company": ticker,
             "sector": h.get("sector") or "",
             "level": f"~{i + 1}",
-            "hop": 0,
+            "hop": 1,
             "relationship_type": "semantic",
             "cascade_score": round(float(h.get("vs_score") or 0.0), 3),
             "why": why,
@@ -291,8 +291,36 @@ async def build_cascade(
         return {"error": f"Event {event_id} not found"}
 
     root_tickers = root_doc.get("tickers", [])
-    headline = root_doc.get("headline", "")
-    root_text = root_doc.get("text", headline)
+
+    # Derive a friendly headline when the worker didn't populate one — same
+    # logic as api/main.py:derive_headline, condensed inline so the cascade
+    # root card matches the Feed.
+    import re as _re
+    _tags = _re.compile(r"<[^>]+>")
+    _sec_co = _re.compile(r"^8-K\s*-\s*([^()]+?)\s*\(\d", _re.IGNORECASE)
+    _sec_item = _re.compile(r"Item\s+(\d+\.\d+)\s*:\s*([^\n<]+)", _re.IGNORECASE)
+
+    def _derive_headline(d: dict) -> str:
+        h = (d.get("headline") or "").strip()
+        if h:
+            return h
+        text = (d.get("text") or "").strip()
+        if not text:
+            return ""
+        if d.get("source_type") == "sec_8k":
+            cleaned = _tags.sub(" ", text)
+            m = _sec_co.search(cleaned)
+            mi = _sec_item.search(cleaned)
+            company = m.group(1).strip().rstrip(",").title() if m else ""
+            item = f"Item {mi.group(1)}: {mi.group(2).strip()}" if mi else ""
+            if company and item:
+                return f"{company} · {item}"[:200]
+            if company:
+                return f"{company} · 8-K filing"[:200]
+        return _tags.sub("", text.split("\n", 1)[0]).strip()[:200]
+
+    headline = _derive_headline(root_doc)
+    root_text = root_doc.get("text") or headline
 
     if not root_tickers:
         return {

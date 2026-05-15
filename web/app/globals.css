@@ -144,3 +144,62 @@ html, body {
     radial-gradient(80% 60% at 50% 50%, rgba(4,6,10,0) 0%, var(--bg-deep) 80%),
     var(--bg);
 }
+
+/* -------------------------------------------------------------- slide-in for new SSE events */
+@keyframes slide-in-top {
+  0% { transform: translateY(-6px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+.slide-in { animation: slide-in-top 0.28s ease-out; }
+
+/* -------------------------------------------------------------- resize handle */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.resize-handle:hover,
+.resize-handle.dragging {
+  opacity: 1;
+}
+.resize-handle::after {
+  content: "";
+  width: 2px;
+  height: 36px;
+  background: var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+/* -------------------------------------------------------------- keyboard hint chip */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.04);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  line-height: 1;
+}
+
+/* -------------------------------------------------------------- accent left bar (critical rows) */
+.accent-bar-critical {
+  box-shadow: inset 2px 0 0 var(--critical);
+}
+.accent-bar-high {
+  box-shadow: inset 2px 0 0 var(--high);
+}

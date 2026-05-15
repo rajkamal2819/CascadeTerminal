@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Search, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { api, type SearchHit } from "@/lib/api";
@@ -12,13 +12,12 @@ export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => vo
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!q.trim()) return;
+  const runQuery = async (query: string) => {
+    if (!query.trim()) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await api.search({ query: q, days_back: 30, limit: 10 });
+      const res = await api.search({ query, days_back: 30, limit: 10 });
       setHits(res.events);
       onResults?.(res.events);
       setOpen(true);
@@ -27,19 +26,43 @@ export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => vo
     } finally {
       setLoading(false);
     }
+  };
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    await runQuery(q);
   }
+
+  // External trigger: window.dispatchEvent(new CustomEvent("cascade:search", { detail: "query" }))
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const detail = (ev as CustomEvent<string>).detail;
+      if (typeof detail === "string") {
+        setQ(detail);
+        void runQuery(detail);
+      }
+    };
+    window.addEventListener("cascade:search", handler);
+    return () => window.removeEventListener("cascade:search", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="relative w-full max-w-xl">
       <form onSubmit={submit} className="glass flex items-center gap-2 rounded-full px-3 py-1.5 focus-within:glow-accent">
         <Search size={14} className="text-muted" />
         <input
+          id="cascade-search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onFocus={() => hits.length > 0 && setOpen(true)}
-          placeholder="ask · ‘AI capex slowdown’ · ‘semis correction’ · ‘TSM earnings’"
+          placeholder="ask · ‘OPEC supply cut’ · ‘Taiwan strait tensions’ · ‘semis correction’"
           className="flex-1 bg-transparent text-[13px] text-text placeholder:text-muted/70 outline-none"
         />
+        <span className="hidden items-center gap-0.5 pr-1 sm:flex">
+          <span className="kbd">⌘</span>
+          <span className="kbd">K</span>
+        </span>
         <button
           type="submit"
           disabled={loading || !q.trim()}
