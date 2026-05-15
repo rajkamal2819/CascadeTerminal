@@ -69,7 +69,7 @@ export default function TerminalPage() {
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.35, delay: 0.05 }}
-        className="pointer-events-auto absolute bottom-12 left-3 top-16 z-10 hidden w-[280px] md:block"
+        className="pointer-events-auto absolute bottom-12 left-3 top-16 z-10 hidden w-[320px] md:block"
       >
         <Feed />
       </motion.aside>

@@ -110,7 +110,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => http<Health>("/health"),
 
-  listEvents: (params: { ticker?: string; sector?: string; impact?: string; hours_back?: number; limit?: number; cascadable_only?: boolean } = {}) => {
+  listEvents: (params: { ticker?: string; sector?: string; impact?: string; source_type?: string; hours_back?: number; limit?: number; cascadable_only?: boolean } = {}) => {
     const q = new URLSearchParams();
     Object.entries(params).forEach(([k, v]) => v !== undefined && v !== "" && q.set(k, String(v)));
     return http<EventList>(`/events${q.toString() ? `?${q}` : ""}`);

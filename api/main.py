@@ -79,6 +79,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.warning("cascadable cache failed: %s", e)
         app.state.cascadable_tickers = set()
 
+    # Cache ticker→sector so events with missing sector can be enriched at
+    # serialise time. Workers don't all populate sector, but companies do.
+    try:
+        ticker_sector: dict[str, str] = {}
+        async for co in app.state.db.companies.find({}, {"ticker": 1, "sector": 1}):
+            t = co.get("ticker")
+            s = co.get("sector")
+            if t and s:
+                ticker_sector[t] = s
+        app.state.ticker_sector = ticker_sector
+        log.info("ticker→sector cached: %d", len(ticker_sector))
+    except Exception as e:
+        log.warning("ticker→sector cache failed: %s", e)
+        app.state.ticker_sector = {}
+
     # Best-effort: change streams require a replica set. Atlas M0 is one.
     try:
         await start_watcher(app.state.db)
@@ -180,16 +195,29 @@ def derive_headline(doc: dict) -> str:
     return _HTML_TAGS.sub("", first).strip()[:200]
 
 
-def _serialize_event(doc: dict, cascadable: set[str] | None = None) -> EventOut:
+def _serialize_event(
+    doc: dict,
+    cascadable: set[str] | None = None,
+    ticker_sector: dict[str, str] | None = None,
+) -> EventOut:
     tickers = doc.get("tickers", []) or []
     has_cascade = bool(cascadable and any(t in cascadable for t in tickers))
+
+    # Enrich sector when worker didn't set it: look up the first known ticker.
+    sector = (doc.get("sector") or "").strip()
+    if not sector and ticker_sector:
+        for t in tickers:
+            if t in ticker_sector:
+                sector = ticker_sector[t]
+                break
+
     return EventOut(
         id=str(doc.get("_id", "")),
         headline=derive_headline(doc),
         text=doc.get("text", "") or "",
         tickers=tickers,
         entities=doc.get("entities", []) or [],
-        sector=doc.get("sector", "") or "",
+        sector=sector,
         impact=doc.get("impact", "") or "",
         source_type=doc.get("source_type", "") or "",
         source_url=doc.get("source_url") or doc.get("url") or "",
@@ -205,8 +233,9 @@ async def list_events(
     ticker: str = "",
     sector: str = "",
     impact: str = "",
-    hours_back: int = Query(default=24, ge=1, le=168),
-    limit: int = Query(default=50, ge=1, le=200),
+    source_type: str = "",
+    hours_back: int = Query(default=24, ge=1, le=720),
+    limit: int = Query(default=80, ge=1, le=200),
     cascadable_only: bool = False,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ) -> EventList:
@@ -214,18 +243,26 @@ async def list_events(
     q: dict = {"published_at": {"$gte": since}}
     if ticker:
         q["tickers"] = ticker.upper()
-    if sector:
-        q["sector"] = sector
     if impact:
         q["impact"] = impact
+    if source_type:
+        q["source_type"] = source_type
 
     cascadable: set[str] = getattr(request.app.state, "cascadable_tickers", set())
+    ticker_sector: dict[str, str] = getattr(request.app.state, "ticker_sector", {})
+
     if cascadable_only and cascadable:
         q["tickers"] = {"$in": list(cascadable)}
 
-    cursor = db.events.find(q).sort("published_at", -1).limit(limit)
-    docs = await cursor.to_list(length=limit)
-    events = [_serialize_event(d, cascadable) for d in docs]
+    # Sector filter applies after enrichment (since stored sector is often empty).
+    # We over-fetch a bit to allow filtering server-side.
+    fetch_limit = limit * 3 if sector else limit
+    cursor = db.events.find(q).sort("published_at", -1).limit(fetch_limit)
+    docs = await cursor.to_list(length=fetch_limit)
+    events = [_serialize_event(d, cascadable, ticker_sector) for d in docs]
+    if sector:
+        events = [e for e in events if e.sector == sector]
+    events = events[:limit]
     # Stable sort: cascadable first (within the existing time order).
     events.sort(key=lambda e: 0 if e.has_cascade else 1)
     return EventList(events=events, count=len(events))
@@ -242,7 +279,8 @@ async def get_event(event_id: str, request: Request, db: AsyncIOMotorDatabase = 
     if not doc:
         raise HTTPException(status_code=404, detail="event not found")
     cascadable: set[str] = getattr(request.app.state, "cascadable_tickers", set())
-    return _serialize_event(doc, cascadable)
+    ticker_sector: dict[str, str] = getattr(request.app.state, "ticker_sector", {})
+    return _serialize_event(doc, cascadable, ticker_sector)
 
 
 # ---------------------------------------------------------------------------
