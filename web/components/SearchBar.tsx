@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Search } from "lucide-react";
+import { Search, Loader2 } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 import { api, type SearchHit } from "@/lib/api";
 
 export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => void }) {
@@ -9,6 +10,7 @@ export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => vo
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -19,6 +21,7 @@ export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => vo
       const res = await api.search({ query: q, days_back: 30, limit: 10 });
       setHits(res.events);
       onResults?.(res.events);
+      setOpen(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "search failed");
     } finally {
@@ -27,45 +30,69 @@ export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => vo
   }
 
   return (
-    <div className="flex flex-col gap-2 w-full max-w-2xl">
-      <form onSubmit={submit} className="flex items-center gap-2">
-        <div className="relative flex-1">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search events… e.g. 'AI capex slowdown' or 'TSM earnings'"
-            className="w-full rounded border border-white/10 bg-surface pl-9 pr-3 py-2 text-sm outline-none focus:border-accent"
-          />
-        </div>
+    <div className="relative w-full max-w-xl">
+      <form onSubmit={submit} className="glass flex items-center gap-2 rounded-full px-3 py-1.5 focus-within:glow-accent">
+        <Search size={14} className="text-muted" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onFocus={() => hits.length > 0 && setOpen(true)}
+          placeholder="ask · ‘AI capex slowdown’ · ‘semis correction’ · ‘TSM earnings’"
+          className="flex-1 bg-transparent text-[13px] text-text placeholder:text-muted/70 outline-none"
+        />
         <button
           type="submit"
-          disabled={loading}
-          className="rounded bg-accent/20 px-3 py-2 text-xs text-accent hover:bg-accent/30 disabled:opacity-50"
+          disabled={loading || !q.trim()}
+          className="mono rounded-full bg-accent/20 px-3 py-1 text-[10px] uppercase tracking-wider text-accent transition hover:bg-accent/30 disabled:opacity-40"
         >
-          {loading ? "Searching…" : "Search"}
+          {loading ? <Loader2 size={12} className="animate-spin" /> : "search"}
         </button>
       </form>
 
-      {error && <div className="text-xs text-critical">{error}</div>}
-
-      {hits.length > 0 && (
-        <ul className="max-h-64 overflow-y-auto rounded border border-white/10 bg-surface text-xs">
-          {hits.map((h) => (
-            <li key={h.id} className="border-b border-white/5 px-3 py-2 last:border-0 hover:bg-white/5">
-              <div className="flex justify-between gap-3">
-                <div className="flex-1">
-                  <div className="text-text">{h.headline || "(no headline)"}</div>
-                  <div className="text-muted mt-0.5">
-                    {h.tickers.join(", ")} · {h.sector || "—"} · {h.impact || "—"}
-                  </div>
-                </div>
-                <div className="text-accent shrink-0 tabular-nums">{h.rerank_score.toFixed(3)}</div>
-              </div>
-            </li>
-          ))}
-        </ul>
+      {error && (
+        <div className="absolute left-0 right-0 top-full mt-2 rounded-lg bg-critical/15 px-3 py-2 text-xs text-critical">
+          {error}
+        </div>
       )}
+
+      <AnimatePresence>
+        {open && hits.length > 0 && (
+          <motion.ul
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+            className="glass-strong thin-scroll absolute left-0 right-0 top-full z-30 mt-2 max-h-72 overflow-y-auto rounded-xl text-xs"
+          >
+            <li className="flex justify-between px-3 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted">
+              <span>hybrid · rerank-2.5</span>
+              <button onClick={() => setOpen(false)} className="hover:text-text">close</button>
+            </li>
+            {hits.map((h) => (
+              <li
+                key={h.id}
+                onClick={() => {
+                  onResults?.([h]);
+                  setOpen(false);
+                }}
+                className="cursor-pointer border-t border-white/5 px-3 py-2 hover:bg-white/[0.04]"
+              >
+                <div className="flex items-baseline gap-2">
+                  <span className="mono text-[10px] font-semibold tracking-wider text-text">
+                    {h.tickers.slice(0, 3).join(" · ") || h.source_type}
+                  </span>
+                  <span className="ml-auto mono text-[10px] tabular-nums text-accent">
+                    {h.rerank_score.toFixed(3)}
+                  </span>
+                </div>
+                <div className="mt-0.5 line-clamp-2 text-[11px] text-muted">
+                  {h.headline || "(no headline)"} · {h.sector || h.impact || "—"}
+                </div>
+              </li>
+            ))}
+          </motion.ul>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

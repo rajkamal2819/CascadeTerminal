@@ -8,7 +8,6 @@ export function ThemeToggle() {
   const theme = useStore((s) => s.theme);
   const toggleTheme = useStore((s) => s.toggleTheme);
 
-  // Rehydrate the theme on mount from localStorage. Avoids flicker on reload.
   useEffect(() => {
     try {
       const saved = localStorage.getItem("cascade-theme");
@@ -23,12 +22,12 @@ export function ThemeToggle() {
   return (
     <button
       onClick={toggleTheme}
-      className="inline-flex items-center gap-2 rounded border border-white/10 bg-surface px-2 py-1 text-xs text-muted hover:text-text"
+      className="glass mono inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] uppercase tracking-wider text-muted transition hover:text-text"
       aria-label="Toggle theme"
       title={`Switch to ${theme === "dark" ? "light" : "dark"}`}
     >
-      {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
-      <span className="hidden sm:inline">{theme === "dark" ? "Light" : "Dark"}</span>
+      {theme === "dark" ? <Sun size={12} /> : <Moon size={12} />}
+      <span className="hidden sm:inline">{theme === "dark" ? "light" : "dark"}</span>
     </button>
   );
 }

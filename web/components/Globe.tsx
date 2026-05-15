@@ -4,12 +4,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useStore } from "@/lib/store";
 
-// react-globe.gl uses WebGL + window, so it must be SSR-disabled.
+// react-globe.gl needs WebGL + window; SSR-disabled, and we delay mount so
+// the page paints instantly with a skeleton instead of blocking on three.js.
 const GlobeGL = dynamic(() => import("react-globe.gl"), { ssr: false });
 
-// Approx HQ coordinates for the most-referenced tickers in our seed graph.
-// Used to position globe points when an event arrives. Falls back to
-// New York if a ticker isn't mapped.
+// HQ coordinates for the most-referenced tickers in our seed graph.
 const HQ: Record<string, { lat: number; lng: number; name: string }> = {
   AAPL: { lat: 37.3349, lng: -122.0090, name: "Apple" },
   MSFT: { lat: 47.6396, lng: -122.1281, name: "Microsoft" },
@@ -35,14 +34,20 @@ const HQ: Record<string, { lat: number; lng: number; name: string }> = {
 
 const DEFAULT_HQ = { lat: 40.7128, lng: -74.006, name: "—" };
 
-const IMPACT_COLOR: Record<string, string> = {
-  critical: "#f87171",
-  high: "#fbbf24",
-  medium: "#8b949e",
-  low: "#4b5563",
+const REL_COLOR: Record<string, string> = {
+  supplier: "#4ade80",
+  customer: "#60a5fa",
+  peer: "#c084fc",
+  sector: "#fbbf24",
+  derivative: "#f472b6",
 };
 
-type GlobeRefAny = { pointOfView?: (pov: { lat: number; lng: number; altitude: number }, ms?: number) => void; controls?: () => { autoRotate: boolean; autoRotateSpeed: number } };
+const IMPACT_COLOR: Record<string, string> = {
+  critical: "#ff4d6d",
+  high: "#fbbf24",
+  medium: "#8b96a8",
+  low: "#4b5563",
+};
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export function Globe() {
@@ -51,10 +56,11 @@ export function Globe() {
   const events = useStore((s) => s.events);
   const cascade = useStore((s) => s.cascade);
   const [size, setSize] = useState({ width: 800, height: 600 });
-  const [mounted, setMounted] = useState(false);
+  const [shown, setShown] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
+    // Defer mount one frame so the rest of the UI paints first.
+    const t = setTimeout(() => setShown(true), 30);
     const measure = () => {
       const el = containerRef.current;
       if (!el) return;
@@ -63,28 +69,31 @@ export function Globe() {
     };
     measure();
     window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("resize", measure);
+    };
   }, []);
 
-  // One globe point per event (use first ticker for position).
+  // Background event pulses (latest events as points on the globe).
   const points = useMemo(() => {
-    return events.slice(0, 200).map((e) => {
+    return events.slice(0, 120).map((e) => {
       const t = e.tickers[0];
       const hq = (t && HQ[t]) || DEFAULT_HQ;
       return {
         lat: hq.lat,
         lng: hq.lng,
         size: e.impact === "critical" ? 0.45 : e.impact === "high" ? 0.3 : 0.18,
-        color: IMPACT_COLOR[e.impact] ?? "#8b949e",
+        color: IMPACT_COLOR[e.impact] ?? "#8b96a8",
         label: `${t ?? e.source_type}: ${e.headline?.slice(0, 80) ?? ""}`,
       };
     });
   }, [events]);
 
-  // Animated arcs for the currently-selected cascade.
+  // Cascade arcs — emphasised when a cascade is selected.
   const arcs = useMemo(() => {
     if (!cascade) return [];
-    return cascade.edges.slice(0, 60).map((edge) => {
+    return cascade.edges.slice(0, 80).map((edge) => {
       const from = HQ[edge.from] ?? DEFAULT_HQ;
       const to = HQ[edge.to] ?? DEFAULT_HQ;
       return {
@@ -92,46 +101,113 @@ export function Globe() {
         startLng: from.lng,
         endLat: to.lat,
         endLng: to.lng,
-        color: edge.type === "supplier" ? "#4ade80" : edge.type === "customer" ? "#60a5fa" : "#a78bfa",
+        color: [REL_COLOR[edge.type] ?? "#ffffff", REL_COLOR[edge.type] ?? "#ffffff"],
+        stroke: 0.35 + edge.weight * 0.4,
+        hop: edge.hop,
       };
     });
   }, [cascade]);
 
-  // Auto-rotate idle; stop while a cascade is selected to keep arcs readable.
+  // Ring halos: root tickers glow critical-red, cascade nodes glow rel-color.
+  const rings = useMemo(() => {
+    if (!cascade) return [];
+    const out: Array<{ lat: number; lng: number; color: string; maxR: number; period: number }> = [];
+    for (const t of cascade.root.tickers) {
+      const hq = HQ[t] ?? DEFAULT_HQ;
+      out.push({ lat: hq.lat, lng: hq.lng, color: "#ff4d6d", maxR: 4.5, period: 1400 });
+    }
+    for (const n of cascade.nodes) {
+      const hq = HQ[n.ticker] ?? DEFAULT_HQ;
+      out.push({
+        lat: hq.lat,
+        lng: hq.lng,
+        color: REL_COLOR[n.relationship_type] ?? "#ffffff",
+        maxR: 2.5 + n.cascade_score * 2,
+        period: 1700 + n.hop * 200,
+      });
+    }
+    return out;
+  }, [cascade]);
+
+  // Idle auto-rotate, slowed when a cascade is on-screen.
   useEffect(() => {
     const g = globeRef.current;
     if (!g?.controls) return;
     const c = g.controls();
-    c.autoRotate = !cascade;
-    c.autoRotateSpeed = 0.4;
-  }, [cascade, mounted]);
+    c.autoRotate = true;
+    c.autoRotateSpeed = cascade ? 0.15 : 0.45;
+    c.enableZoom = false;
+  }, [cascade, shown]);
+
+  // When a cascade lands, zoom toward the root's HQ.
+  useEffect(() => {
+    const g = globeRef.current;
+    if (!g?.pointOfView || !cascade) return;
+    const t = cascade.root.tickers[0];
+    const hq = (t && HQ[t]) || DEFAULT_HQ;
+    g.pointOfView({ lat: hq.lat, lng: hq.lng, altitude: 1.9 }, 1400);
+  }, [cascade]);
 
   return (
     <div ref={containerRef} className="relative h-full w-full overflow-hidden">
-      {mounted && (
+      {!shown && <GlobeSkeleton />}
+      {shown && (
         <GlobeGL
           ref={globeRef}
           width={size.width}
           height={size.height}
           backgroundColor="rgba(0,0,0,0)"
           globeImageUrl="//unpkg.com/three-globe/example/img/earth-night.jpg"
+          bumpImageUrl="//unpkg.com/three-globe/example/img/earth-topology.png"
+          showAtmosphere
+          atmosphereColor={cascade ? "#ff4d6d" : "#4ade80"}
+          atmosphereAltitude={0.22}
           pointsData={points}
           pointAltitude={(d: any) => d.size}
           pointColor={(d: any) => d.color}
           pointLabel={(d: any) => d.label}
-          pointRadius={0.45}
+          pointRadius={0.5}
+          pointResolution={6}
           arcsData={arcs}
           arcColor={(d: any) => d.color}
-          arcDashLength={0.4}
+          arcStroke={(d: any) => d.stroke}
+          arcDashLength={0.45}
           arcDashGap={0.15}
-          arcDashAnimateTime={2200}
-          arcStroke={0.5}
-          atmosphereColor="#4ade80"
-          atmosphereAltitude={0.18}
+          arcDashAnimateTime={(d: any) => 1800 + d.hop * 300}
+          arcAltitudeAutoScale={0.5}
+          ringsData={rings}
+          ringColor={(d: any) => () => d.color}
+          ringMaxRadius={(d: any) => d.maxR}
+          ringPropagationSpeed={2.5}
+          ringRepeatPeriod={(d: any) => d.period}
         />
       )}
-      <div className="pointer-events-none absolute bottom-2 left-2 text-[10px] text-muted">
-        {events.length} events · {arcs.length} cascade edges
+
+      {/* Vignette so the rim text reads cleanly */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(80% 70% at 50% 50%, transparent 60%, rgba(4,6,10,0.55) 100%)",
+        }}
+      />
+    </div>
+  );
+}
+
+function GlobeSkeleton() {
+  return (
+    <div className="absolute inset-0 grid place-items-center">
+      <div className="relative h-72 w-72 rounded-full opacity-50">
+        <div
+          className="absolute inset-0 rounded-full"
+          style={{
+            background:
+              "radial-gradient(circle at 35% 35%, rgba(74,222,128,0.25) 0%, transparent 60%), radial-gradient(circle at 70% 70%, rgba(96,165,250,0.18) 0%, transparent 60%)",
+          }}
+        />
+        <div className="pulse-ring absolute inset-0 rounded-full border border-white/10" />
       </div>
     </div>
   );
