@@ -101,11 +101,11 @@ agent → MongoDB control-plane integration.
 
 ## Tech stack
 
-**Frontend** (Phase 6, in progress): Next.js 15 App Router · TypeScript strict
-· Tailwind · shadcn/ui · react-globe.gl · framer-motion · Zustand
+**Frontend** (Phase 6, next): Next.js 15 App Router · TypeScript strict ·
+Tailwind · shadcn/ui · react-globe.gl · framer-motion · Zustand
 
-**Backend** (Phase 5, in progress): Python 3.11 · FastAPI · Motor (async
-Mongo) · Pydantic v2
+**Backend** (Phase 5, done): Python 3.11 · FastAPI · Motor (async Mongo) ·
+Pydantic v2 · sse-starlette · change streams
 
 **Agent**: Google Agent Development Kit (`google-adk`) · Gemini 3 (Vertex AI
 for submission, AI Studio key during dev) · MongoDB MCP server for tool
@@ -207,8 +207,8 @@ python -m agent.main "What is today's NVIDIA AI chip news and what tickers does 
 | 1     | MongoDB schemas, indexes, seed data               | done           |
 | 2     | Six async ingestion workers                       | done           |
 | 3     | Voyage embeddings · NER · backfill pipeline       | done           |
-| **4** | **Google ADK agent — 6 tools, `$graphLookup`, rerank-2.5** | **done** |
-| 5     | FastAPI backend + change-stream SSE               | next           |
+| 4     | Google ADK agent — 6 tools, `$graphLookup`, rerank-2.5 | done      |
+| **5** | **FastAPI backend + change-stream SSE**           | **done**       |
 | 6     | Next.js terminal UI (globe, feed, cascade panel)  | pending        |
 | 7     | Polish · seed demo · deploy · submit              | pending        |
 
