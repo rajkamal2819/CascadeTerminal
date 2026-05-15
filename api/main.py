@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator
@@ -129,17 +130,37 @@ async def health(db: AsyncIOMotorDatabase = Depends(get_db)) -> HealthResponse:
 # Events
 # ---------------------------------------------------------------------------
 
+_HTML_TAGS = re.compile(r"<[^>]+>")
+
+
+def derive_headline(doc: dict) -> str:
+    """
+    Workers don't all populate `headline` — derive it from the first
+    meaningful line of `text` when the field is missing. Strips HTML so
+    SEC EDGAR feed entries (which contain `<b>Filed:</b>` etc) read cleanly.
+    """
+    h = (doc.get("headline") or "").strip()
+    if h:
+        return h
+    text = (doc.get("text") or "").strip()
+    if not text:
+        return ""
+    first = text.split("\n", 1)[0]
+    first = _HTML_TAGS.sub("", first).strip()
+    return first[:200]
+
+
 def _serialize_event(doc: dict) -> EventOut:
     return EventOut(
         id=str(doc.get("_id", "")),
-        headline=doc.get("headline", "") or "",
+        headline=derive_headline(doc),
         text=doc.get("text", "") or "",
         tickers=doc.get("tickers", []) or [],
         entities=doc.get("entities", []) or [],
         sector=doc.get("sector", "") or "",
         impact=doc.get("impact", "") or "",
         source_type=doc.get("source_type", "") or "",
-        source_url=doc.get("source_url", "") or "",
+        source_url=doc.get("source_url") or doc.get("url") or "",
         published_at=doc.get("published_at"),
         ingested_at=doc.get("ingested_at"),
     )

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, AsyncIterator
 
@@ -58,13 +59,26 @@ async def _watch_changes(db: AsyncIOMotorDatabase) -> None:
             await asyncio.sleep(5)
 
 
+_HTML_TAGS = re.compile(r"<[^>]+>")
+
+
+def _derive_headline(doc: dict[str, Any]) -> str:
+    h = (doc.get("headline") or "").strip()
+    if h:
+        return h
+    text = (doc.get("text") or "").strip()
+    if not text:
+        return ""
+    return _HTML_TAGS.sub("", text.split("\n", 1)[0]).strip()[:200]
+
+
 def _serialize_event(doc: dict[str, Any]) -> dict[str, Any]:
     """Project an event doc to a JSON-safe SSE payload."""
     return {
         "id": str(doc.get("_id", "")),
-        "headline": doc.get("headline", ""),
+        "headline": _derive_headline(doc),
         "tickers": doc.get("tickers", []),
-        "sector": doc.get("sector", ""),
+        "sector": doc.get("sector") or "",
         "impact": doc.get("impact", ""),
         "source_type": doc.get("source_type", ""),
         "published_at": _iso(doc.get("published_at")),

@@ -175,16 +175,29 @@ async def search_events(
     else:
         reranked = []
 
-    # Step 6: Serialize for agent
+    # Step 6: Serialize for agent. Workers don't all populate `headline`,
+    # so derive from the first line of `text` when missing.
+    import re as _re
+    _tags = _re.compile(r"<[^>]+>")
+
+    def _hl(d):
+        h = (d.get("headline") or "").strip()
+        if h:
+            return h
+        t = (d.get("text") or "").strip()
+        if not t:
+            return ""
+        return _tags.sub("", t.split("\n", 1)[0]).strip()[:200]
+
     events = []
     for doc in reranked:
         events.append({
             "id": str(doc["_id"]),
-            "headline": doc.get("headline", ""),
+            "headline": _hl(doc),
             "tickers": doc.get("tickers", []),
-            "sector": doc.get("sector", ""),
-            "impact": doc.get("impact", ""),
-            "source_type": doc.get("source_type", ""),
+            "sector": doc.get("sector") or "",
+            "impact": doc.get("impact") or "",
+            "source_type": doc.get("source_type") or "",
             "published_at": doc.get("published_at", "").isoformat() if isinstance(doc.get("published_at"), datetime) else str(doc.get("published_at", "")),
             "rerank_score": round(doc.get("rerank_score", 0.0), 4),
         })
