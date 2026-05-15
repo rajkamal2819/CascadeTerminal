@@ -28,8 +28,17 @@ async def post_search(req: SearchRequest) -> SearchResponse:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"search failed: {e}")
 
-    return SearchResponse(
-        query=req.query,
-        events=[SearchHit(**hit) for hit in result.get("events", [])],
-        count=result.get("count", 0),
-    )
+    hits = []
+    for h in result.get("events", []):
+        # tool returns may contain None for missing fields; coerce to "".
+        hits.append(SearchHit(
+            id=h.get("id", ""),
+            headline=h.get("headline") or "",
+            tickers=h.get("tickers") or [],
+            sector=h.get("sector") or "",
+            impact=h.get("impact") or "",
+            source_type=h.get("source_type") or "",
+            published_at=h.get("published_at") or "",
+            rerank_score=float(h.get("rerank_score") or 0.0),
+        ))
+    return SearchResponse(query=req.query, events=hits, count=result.get("count", 0))

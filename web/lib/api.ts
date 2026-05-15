@@ -1,0 +1,128 @@
+// Typed fetch wrappers for the Cascade FastAPI backend.
+// In dev, NEXT_PUBLIC_API_URL points at http://localhost:8080.
+// In prod, it points at the Cloud Run URL.
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
+
+export type Event = {
+  id: string;
+  headline: string;
+  text?: string;
+  tickers: string[];
+  entities?: string[];
+  sector: string;
+  impact: "critical" | "high" | "medium" | "low" | string;
+  source_type: string;
+  source_url?: string;
+  published_at?: string | null;
+};
+
+export type EventList = {
+  events: Event[];
+  count: number;
+};
+
+export type SearchHit = {
+  id: string;
+  headline: string;
+  tickers: string[];
+  sector: string;
+  impact: string;
+  source_type: string;
+  published_at: string;
+  rerank_score: number;
+};
+
+export type SearchResponse = {
+  query: string;
+  events: SearchHit[];
+  count: number;
+};
+
+export type CascadeNode = {
+  ticker: string;
+  company: string;
+  sector: string;
+  level: string;
+  hop: number;
+  relationship_type: string;
+  cascade_score: number;
+  why: string;
+};
+
+export type CascadeEdge = {
+  from: string;
+  to: string;
+  type: string;
+  weight: number;
+  hop: number;
+};
+
+export type CascadeRoot = {
+  id: string;
+  headline: string;
+  tickers: string[];
+  impact: string;
+  sector: string;
+  published_at: string;
+  source_type: string;
+};
+
+export type CascadeResponse = {
+  root: CascadeRoot;
+  nodes: CascadeNode[];
+  edges: CascadeEdge[];
+  hop_counts: Record<string, number>;
+  message?: string;
+};
+
+export type StatsResponse = {
+  impact_counts: Record<string, number>;
+  sector_counts: Record<string, number>;
+  top_tickers: { ticker: string; count: number }[];
+  total_events: number;
+  cascade_count: number;
+  hours_back: number;
+};
+
+export type Health = {
+  ok: boolean;
+  mongo: string;
+  voyage: string;
+  gemini_model: string;
+  events_24h: number;
+};
+
+async function http<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`${res.status} ${res.statusText}: ${await res.text().catch(() => "")}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  health: () => http<Health>("/health"),
+
+  listEvents: (params: { ticker?: string; sector?: string; impact?: string; hours_back?: number; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => v !== undefined && v !== "" && q.set(k, String(v)));
+    return http<EventList>(`/events${q.toString() ? `?${q}` : ""}`);
+  },
+
+  getEvent: (id: string) => http<Event>(`/events/${id}`),
+
+  stats: (hours_back = 24) => http<StatsResponse>(`/stats?hours_back=${hours_back}`),
+
+  search: (body: { query: string; sector?: string; impact?: string; days_back?: number; limit?: number }) =>
+    http<SearchResponse>("/search", { method: "POST", body: JSON.stringify(body) }),
+
+  buildCascade: (body: { event_id: string; max_hops?: number; top_k?: number }) =>
+    http<CascadeResponse>("/cascade", { method: "POST", body: JSON.stringify(body) }),
+};
+
+export const SSE_URL = process.env.NEXT_PUBLIC_SSE_URL ?? `${API_URL}/stream`;

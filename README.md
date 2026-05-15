@@ -101,8 +101,9 @@ agent → MongoDB control-plane integration.
 
 ## Tech stack
 
-**Frontend** (Phase 6, next): Next.js 15 App Router · TypeScript strict ·
-Tailwind · shadcn/ui · react-globe.gl · framer-motion · Zustand
+**Frontend** (Phase 6, done): Next.js 15 App Router · TypeScript strict ·
+Tailwind · react-globe.gl + three · framer-motion · Zustand · react-window
+virtual feed · SSE client · dark/light theme persistence
 
 **Backend** (Phase 5, done): Python 3.11 · FastAPI · Motor (async Mongo) ·
 Pydantic v2 · sse-starlette · change streams
@@ -208,8 +209,8 @@ python -m agent.main "What is today's NVIDIA AI chip news and what tickers does 
 | 2     | Six async ingestion workers                       | done           |
 | 3     | Voyage embeddings · NER · backfill pipeline       | done           |
 | 4     | Google ADK agent — 6 tools, `$graphLookup`, rerank-2.5 | done      |
-| **5** | **FastAPI backend + change-stream SSE**           | **done**       |
-| 6     | Next.js terminal UI (globe, feed, cascade panel)  | pending        |
+| 5     | FastAPI backend + change-stream SSE               | done           |
+| **6** | **Next.js terminal UI (globe, feed, cascade panel)** | **done**    |
 | 7     | Polish · seed demo · deploy · submit              | pending        |
 
 The Phase 4 gate is met by `scripts/test_tools.py`:
