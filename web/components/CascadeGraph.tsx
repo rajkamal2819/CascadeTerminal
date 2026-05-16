@@ -84,6 +84,26 @@ type Layout = "radial" | "sankey";
 // Layout builders
 // ============================================================================
 
+// Extract the real company name from the node — company field is often the
+// ticker itself for semantic fallback nodes; the real name hides in "why".
+function resolveCompany(ticker: string, company: string | null | undefined, why: string | null | undefined): string {
+  const c = (company ?? "").trim();
+  if (c && c.toUpperCase() !== ticker.toUpperCase() && c.length > 2 && !/^\$?[A-Z]{1,6}$/.test(c)) {
+    return c;
+  }
+  const w = (why ?? "").trim();
+  // "8-K - Company Name (0001234567) (Filer)"
+  let m = w.match(/^8-K\s*[-·]\s*(.+?)\s*\(\d{10}\)/i);
+  if (m) return m[1].trim();
+  // "Company Name (CIK) (Filer)"
+  m = w.match(/^(.+?)\s*\(\d{10}\)/);
+  if (m && m[1].trim().toUpperCase() !== ticker.toUpperCase()) return m[1].trim();
+  // "Company Name · Item X.XX: Description"
+  m = w.match(/^(.+?)\s*[·\-]\s*Item\s+\d/i);
+  if (m && m[1].trim().toUpperCase() !== ticker.toUpperCase()) return m[1].trim();
+  return c || ticker;
+}
+
 function detectBottleneck(cascade: CascadeResponse): string | null {
   // The L1 ticker that the most L2+ nodes route through.
   const inDegree = new Map<string, number>();
@@ -141,7 +161,7 @@ function buildRadial(cascade: CascadeResponse, W: number, H: number, bottleneck:
       const y = oy + r * Math.sin(angle);
       const polarity = classifyNode(n.relationship_type, false);
       nodes.push({
-        ticker: n.ticker, company: (n.company ?? n.ticker ?? "").slice(0, 24),
+        ticker: n.ticker, company: resolveCompany(n.ticker, n.company, n.why).slice(0, 22),
         x, y,
         color: POLARITY_COLOR[polarity],
         polarity,
@@ -227,7 +247,7 @@ function buildSankey(cascade: CascadeResponse, W: number, H: number, bottleneck:
       const y = padding + (group.length === 1 ? usable / 2 : step * i);
       const polarity = classifyNode(n.relationship_type, false);
       nodes.push({
-        ticker: n.ticker, company: (n.company ?? n.ticker ?? "").slice(0, 22),
+        ticker: n.ticker, company: resolveCompany(n.ticker, n.company, n.why).slice(0, 22),
         x: xc, y,
         color: POLARITY_COLOR[polarity],
         polarity,

@@ -2,9 +2,36 @@
 
 import { useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Zap, Network, ArrowUpRight } from "lucide-react";
+import { X, Zap, Network } from "lucide-react";
 import { api, type CascadeNode, type CascadeResponse, type CascadeEdge } from "@/lib/api";
 import { useStore } from "@/lib/store";
+
+// Extract readable company name — for semantic fallback nodes the real name
+// hides inside the "why" field as "8-K - Company Name (CIK) (Filer)".
+function resolveCompany(ticker: string, company: string | null | undefined, why: string | null | undefined): string {
+  const c = (company ?? "").trim();
+  if (c && c.toUpperCase() !== ticker.toUpperCase() && c.length > 2 && !/^\$?[A-Z]{1,6}$/.test(c)) {
+    return c;
+  }
+  const w = (why ?? "").trim();
+  let m = w.match(/^8-K\s*[-·]\s*(.+?)\s*\(\d{10}\)/i);
+  if (m) return m[1].trim();
+  m = w.match(/^(.+?)\s*\(\d{10}\)/);
+  if (m && m[1].trim().toUpperCase() !== ticker.toUpperCase()) return m[1].trim();
+  m = w.match(/^(.+?)\s*[·\-]\s*Item\s+\d/i);
+  if (m && m[1].trim().toUpperCase() !== ticker.toUpperCase()) return m[1].trim();
+  return c || ticker;
+}
+
+// Clean up SEC filing noise from the "why" text.
+function cleanWhy(why: string | null | undefined): string {
+  if (!why) return "";
+  return why
+    .replace(/\s*\(\d{10}\)\s*\(Filer\)/gi, "")
+    .replace(/^8-K\s*[-·]\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 const REL_COLOR: Record<string, string> = {
   supplier: "var(--supplier)",
@@ -321,44 +348,65 @@ export function Cascade() {
                         <span className="tabular-nums text-muted">{group.length}</span>
                       </div>
                       <ul>
-                        {group.map((n, i) => (
+                        {group.map((n, i) => {
+                          const displayName = resolveCompany(n.ticker, n.company, n.why);
+                          const whyClean = cleanWhy(n.why);
+                          return (
                           <motion.li
                             key={n.ticker + i}
                             initial={{ opacity: 0, y: 4 }}
                             animate={{ opacity: 1, y: 0 }}
                             transition={{ duration: 0.15, delay: Math.min(0.25, i * 0.02) }}
-                            className="border-b border-white/[0.03] px-4 py-2.5 text-xs last:border-b-0"
+                            className="border-b border-white/[0.03] px-4 py-2.5 last:border-b-0"
                           >
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-start gap-2">
+                              {/* Left: level badge */}
                               <span
-                                className="mono rounded px-1.5 py-0.5 text-[9px] font-semibold tracking-wider"
+                                className="mono mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold tracking-wider"
                                 style={{
                                   color,
                                   border: `1px solid ${color}`,
                                   background: "transparent",
-                                  boxShadow: `0 0 12px ${color}33`,
+                                  boxShadow: `0 0 10px ${color}2a`,
                                 }}
                               >
                                 {n.level}
                               </span>
-                              <span className="mono font-semibold tracking-wider text-text">{n.ticker}</span>
-                              <span className="truncate text-muted">{n.company}</span>
-                              {isBottleneckTicker(n.ticker) && (
-                                <span className="mono shrink-0 rounded-full bg-critical/20 px-1.5 py-0.5 text-[8px] uppercase tracking-wider text-critical" title="Bottleneck — most L2 routing flows through this ticker">
-                                  bottleneck
-                                </span>
-                              )}
-                              <span className="mono ml-auto tabular-nums text-accent text-[11px]">
+
+                              {/* Centre: name + ticker + why */}
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-baseline gap-1.5">
+                                  <span className="truncate text-[12px] font-medium text-text leading-tight">
+                                    {displayName}
+                                  </span>
+                                  {isBottleneckTicker(n.ticker) && (
+                                    <span className="mono shrink-0 rounded-full bg-critical/20 px-1.5 py-0.5 text-[8px] uppercase tracking-wider text-critical">
+                                      bottleneck
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="mt-0.5 flex items-center gap-1.5">
+                                  <span className="mono text-[10px] font-semibold tracking-wider" style={{ color }}>
+                                    {n.ticker}
+                                  </span>
+                                  <span className="text-muted/50">·</span>
+                                  <span className="capitalize text-[10px] text-muted/70">{n.relationship_type}</span>
+                                </div>
+                                {whyClean && (
+                                  <div className="mt-1 line-clamp-2 text-[10px] leading-snug text-muted/75">
+                                    {whyClean}
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Right: score */}
+                              <span className="mono ml-1 shrink-0 tabular-nums text-accent text-[11px]">
                                 {n.cascade_score.toFixed(2)}
                               </span>
                             </div>
-                            <div className="mt-1 line-clamp-2 pl-9 text-[11px] text-muted">{n.why}</div>
-                            <div className="mt-1 flex items-center gap-1.5 pl-9 text-[10px] text-muted/80">
-                              <ArrowUpRight size={10} />
-                              <span className="capitalize">{n.relationship_type}</span>
-                            </div>
                           </motion.li>
-                        ))}
+                          );
+                        })}
                       </ul>
                     </li>
                   );
