@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { GitBranch, Network, Pause, Play, Radio, RotateCcw } from "lucide-react";
+import { GitBranch, Maximize2, Minus, Network, Pause, Play, Plus, Radio, RotateCcw } from "lucide-react";
 import { useStore } from "@/lib/store";
 import type { CascadeNode, CascadeEdge, CascadeResponse } from "@/lib/api";
 
@@ -141,7 +141,7 @@ function buildRadial(cascade: CascadeResponse, W: number, H: number, bottleneck:
       const y = oy + r * Math.sin(angle);
       const polarity = classifyNode(n.relationship_type, false);
       nodes.push({
-        ticker: n.ticker, company: (n.company ?? "").slice(0, 20),
+        ticker: n.ticker, company: (n.company ?? n.ticker ?? "").slice(0, 24),
         x, y,
         color: POLARITY_COLOR[polarity],
         polarity,
@@ -227,7 +227,7 @@ function buildSankey(cascade: CascadeResponse, W: number, H: number, bottleneck:
       const y = padding + (group.length === 1 ? usable / 2 : step * i);
       const polarity = classifyNode(n.relationship_type, false);
       nodes.push({
-        ticker: n.ticker, company: (n.company ?? "").slice(0, 18),
+        ticker: n.ticker, company: (n.company ?? n.ticker ?? "").slice(0, 22),
         x: xc, y,
         color: POLARITY_COLOR[polarity],
         polarity,
@@ -335,9 +335,9 @@ function FlowParticle({ edge, delay }: { edge: PlacedEdge; delay: number }) {
     const len = path.getTotalLength();
     let frame = 0;
     let start = 0;
-    const duration = 2000 + delay * 180;
+    const duration = 3600 + delay * 220;
     const animate = (ts: number) => {
-      if (!start) start = ts + delay * 100;
+      if (!start) start = ts + delay * 180;
       const t = ((ts - start) % duration) / duration;
       if (t >= 0 && t <= 1) {
         try {
@@ -376,6 +376,48 @@ export function CascadeGraph() {
   const [layout, setLayout] = useState<Layout>("radial");
   const [replayT, setReplayT] = useState(1);   // 0..1 — fraction of cascade revealed
   const [playing, setPlaying] = useState(false);
+
+  // ── Zoom + pan state ───────────────────────────────────────────────
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const dragRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+
+  const clampZoom = (z: number) => Math.max(0.5, Math.min(3, z));
+
+  const handleWheel = useCallback((ev: React.WheelEvent) => {
+    ev.preventDefault();
+    setZoom((z) => clampZoom(z + (ev.deltaY < 0 ? 0.08 : -0.08)));
+  }, []);
+
+  const handlePointerDown = useCallback((ev: React.PointerEvent) => {
+    // Only left-button drag and not on a clickable element
+    if (ev.button !== 0) return;
+    (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+    dragRef.current = { x: ev.clientX, y: ev.clientY, px: pan.x, py: pan.y };
+  }, [pan]);
+
+  const handlePointerMove = useCallback((ev: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    const dx = ev.clientX - dragRef.current.x;
+    const dy = ev.clientY - dragRef.current.y;
+    setPan({ x: dragRef.current.px + dx, y: dragRef.current.py + dy });
+  }, []);
+
+  const handlePointerUp = useCallback((ev: React.PointerEvent) => {
+    (ev.currentTarget as HTMLElement).releasePointerCapture(ev.pointerId);
+    dragRef.current = null;
+  }, []);
+
+  const resetView = useCallback(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, []);
+
+  // Reset view when cascade changes
+  useEffect(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [cascade]);
 
   // Measure container
   useEffect(() => {
@@ -467,8 +509,9 @@ export function CascadeGraph() {
           from { stroke-dashoffset: 300; }
           to   { stroke-dashoffset: 0; }
         }
-        .flow-edge { animation: flow 2.4s linear infinite; }
-        .node-transition { transition: transform 0.55s cubic-bezier(0.22, 1, 0.36, 1); }
+        .flow-edge { animation: flow 4s linear infinite; }
+        .graph-zoom-wrap { transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1); }
+        .graph-zoom-wrap.dragging { transition: none; }
       `}</style>
 
       {/* ── Top bar: verdict + controls ─────────────────────────────── */}
@@ -500,30 +543,59 @@ export function CascadeGraph() {
           </motion.div>
         )}
 
-        {/* Layout switcher */}
-        <div className="glass flex items-center gap-0.5 rounded-full p-0.5">
-          <button
-            onClick={() => setLayout("radial")}
-            title="Radial layout (coverage)"
-            className={
-              "inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] uppercase tracking-wider transition " +
-              (layout === "radial" ? "bg-accent/20 text-accent" : "text-muted hover:text-text")
-            }
-          >
-            <Network size={10} />
-            <span className="hidden lg:inline">Radial</span>
-          </button>
-          <button
-            onClick={() => setLayout("sankey")}
-            title="Sankey layout (flow)"
-            className={
-              "inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] uppercase tracking-wider transition " +
-              (layout === "sankey" ? "bg-accent/20 text-accent" : "text-muted hover:text-text")
-            }
-          >
-            <GitBranch size={10} />
-            <span className="hidden lg:inline">Sankey</span>
-          </button>
+        <div className="flex flex-col items-end gap-1.5">
+          {/* Layout switcher */}
+          <div className="glass flex items-center gap-0.5 rounded-full p-0.5">
+            <button
+              onClick={() => setLayout("radial")}
+              title="Radial layout (coverage)"
+              className={
+                "inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] uppercase tracking-wider transition " +
+                (layout === "radial" ? "bg-accent/20 text-accent" : "text-muted hover:text-text")
+              }
+            >
+              <Network size={10} />
+              <span className="hidden lg:inline">Radial</span>
+            </button>
+            <button
+              onClick={() => setLayout("sankey")}
+              title="Sankey layout (flow)"
+              className={
+                "inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] uppercase tracking-wider transition " +
+                (layout === "sankey" ? "bg-accent/20 text-accent" : "text-muted hover:text-text")
+              }
+            >
+              <GitBranch size={10} />
+              <span className="hidden lg:inline">Sankey</span>
+            </button>
+          </div>
+          {/* Zoom controls */}
+          <div className="glass flex items-center gap-0.5 rounded-full p-0.5">
+            <button
+              onClick={() => setZoom((z) => clampZoom(z - 0.15))}
+              title="Zoom out"
+              className="inline-flex h-6 w-6 items-center justify-center rounded-full text-muted hover:bg-white/10 hover:text-text transition"
+            >
+              <Minus size={11} />
+            </button>
+            <div className="mono w-9 text-center text-[9px] tabular-nums text-muted">
+              {Math.round(zoom * 100)}%
+            </div>
+            <button
+              onClick={() => setZoom((z) => clampZoom(z + 0.15))}
+              title="Zoom in"
+              className="inline-flex h-6 w-6 items-center justify-center rounded-full text-muted hover:bg-white/10 hover:text-text transition"
+            >
+              <Plus size={11} />
+            </button>
+            <button
+              onClick={resetView}
+              title="Reset view"
+              className="inline-flex h-6 w-6 items-center justify-center rounded-full text-muted hover:bg-white/10 hover:text-text transition"
+            >
+              <Maximize2 size={10} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -533,6 +605,12 @@ export function CascadeGraph() {
         width={size.w}
         height={size.h}
         className="absolute inset-0 mt-12"
+        onWheel={handleWheel}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        style={{ cursor: dragRef.current ? "grabbing" : "grab", touchAction: "none" }}
       >
         <defs>
           <radialGradient id="rootHalo" cx="50%" cy="50%" r="50%">
@@ -540,6 +618,13 @@ export function CascadeGraph() {
             <stop offset="100%" stopColor="#ff4d6d" stopOpacity="0" />
           </radialGradient>
         </defs>
+
+        {/* Transformable group — pan & zoom applied here so all children move
+            together. Centre-anchored so zoom scales around the viewport centre. */}
+        <g
+          className={"graph-zoom-wrap " + (dragRef.current ? "dragging" : "")}
+          transform={`translate(${size.w / 2 + pan.x} ${size.h / 2 + pan.y}) scale(${zoom}) translate(${-size.w / 2} ${-size.h / 2})`}
+        >
 
         {/* Orbit rings (radial only) */}
         {layout === "radial" && [1, 2, 3].map((h) => (
@@ -633,7 +718,7 @@ export function CascadeGraph() {
             key={n.ticker + i}
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            transition={{ type: "spring", stiffness: 220, damping: 18, delay: n.isRoot ? 0 : 0.15 + i * 0.025 }}
+            transition={{ type: "spring", stiffness: 110, damping: 24, mass: 1.1, delay: n.isRoot ? 0 : 0.25 + i * 0.06 }}
             style={{ transformOrigin: `${n.x}px ${n.y}px` }}
           >
             {/* Root pulse rings */}
@@ -689,28 +774,31 @@ export function CascadeGraph() {
               style={{ filter: `drop-shadow(0 0 ${n.isRoot ? 12 : n.isBottleneck ? 10 : 6}px ${n.color}88)` }}
             />
 
+            {/* Ticker pill inside node (small, mono) */}
             <text
-              x={n.x} y={n.isRoot ? n.y + 5 : n.y + 4}
+              x={n.x} y={n.isRoot ? n.y + 4 : n.y + 3}
               textAnchor="middle"
               fill={n.color}
-              fontSize={n.isRoot ? 11 : 8}
+              fontSize={n.isRoot ? 9 : 7}
               fontFamily="ui-monospace, monospace"
               fontWeight={700}
-              style={{ userSelect: "none", paintOrder: "stroke", stroke: "rgba(4,6,10,0.85)", strokeWidth: 3 }}
+              style={{ userSelect: "none", paintOrder: "stroke", stroke: "rgba(4,6,10,0.85)", strokeWidth: 3, letterSpacing: "0.05em" }}
             >
               {n.ticker.slice(0, 5)}
             </text>
 
+            {/* Company name below — PRIMARY readable label */}
             <text
               x={n.x}
-              y={n.y + (n.isRoot ? ROOT_R + 14 : NODE_R + 12)}
+              y={n.y + (n.isRoot ? ROOT_R + 16 : NODE_R + 14)}
               textAnchor="middle"
-              fill="rgba(139,150,168,0.8)"
-              fontSize={7}
-              fontFamily="ui-sans-serif, sans-serif"
-              style={{ userSelect: "none" }}
+              fill={n.isRoot ? "#fff" : "rgba(230,237,243,0.92)"}
+              fontSize={n.isRoot ? 11 : 9.5}
+              fontFamily="ui-sans-serif, system-ui, sans-serif"
+              fontWeight={n.isRoot ? 600 : 500}
+              style={{ userSelect: "none", paintOrder: "stroke", stroke: "rgba(4,6,10,0.85)", strokeWidth: 3 }}
             >
-              {n.company}
+              {n.company.length > 18 ? n.company.slice(0, 16) + "…" : n.company}
             </text>
 
             {/* Bottleneck label */}
@@ -752,6 +840,7 @@ export function CascadeGraph() {
             ))}
           </>
         )}
+        </g>
       </svg>
 
       {/* ── Replay scrubber ─────────────────────────────────────────── */}

@@ -33,6 +33,25 @@ export default function TerminalPage() {
   const selectedId = useStore((s) => s.selectedEventId);
   const cascade = useStore((s) => s.cascade);
 
+  // Track resizable rail widths so the hero/nudge centre between them
+  // instead of being anchored to the viewport (which makes them visually
+  // offset by the panels' combined width).
+  const [leftW, setLeftW] = useState(340);
+  const [rightW, setRightW] = useState(360);
+  useEffect(() => {
+    const read = () => {
+      try {
+        const l = parseInt(localStorage.getItem("cascade-rail-left") || "340", 10);
+        const r = parseInt(localStorage.getItem("cascade-rail-right") || "360", 10);
+        if (Number.isFinite(l)) setLeftW(l);
+        if (Number.isFinite(r)) setRightW(r);
+      } catch {}
+    };
+    read();
+    const id = setInterval(read, 600);
+    return () => clearInterval(id);
+  }, []);
+
   useEffect(() => {
     let alive = true;
     const tick = () =>
@@ -174,52 +193,58 @@ export default function TerminalPage() {
         </ResizableRail>
       </motion.aside>
 
-      {/* ── Hero (empty state — no events loaded yet) ── */}
-      <AnimatePresence>
-        {showHero && (
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.4, delay: 0.3 }}
-            className="pointer-events-none absolute left-1/2 top-1/2 z-10 w-full max-w-sm -translate-x-1/2 -translate-y-1/2 px-6 text-center"
-          >
-            <div className="glass pointer-events-auto rounded-2xl px-6 py-5">
-              <div className="mono text-[10px] uppercase tracking-[0.4em] text-muted">cascade terminal</div>
-              <div className="mt-1 text-[14px] text-text">Real-time news, geopolitics &amp; market cascade intelligence</div>
-              <div className="mt-1 text-[11px] text-muted">$graphLookup · voyage rerank-2.5 · gemini</div>
-              <div className="mt-4 mono text-[9px] uppercase tracking-widest text-muted/70">try a query</div>
-              <div className="mt-1.5 flex flex-wrap justify-center gap-1.5">
-                {EXAMPLE_QUERIES.map((q) => (
-                  <button
-                    key={q.label}
-                    onClick={() => window.dispatchEvent(new CustomEvent("cascade:search", { detail: q.query }))}
-                    className="rounded-full bg-white/[0.04] px-3 py-1 text-[11px] text-text/85 hover:bg-accent/15 hover:text-accent transition"
-                  >
-                    {q.label}
-                  </button>
-                ))}
+      {/* ── Centred middle column (lives between the rails so the hero
+              and nudge are visually centred in the visible canvas) ── */}
+      <div
+        className="pointer-events-none absolute top-16 bottom-12 z-10 hidden md:flex flex-col items-center justify-center"
+        style={{ left: leftW + 16, right: rightW + 16 }}
+      >
+        <AnimatePresence>
+          {showHero && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.4, delay: 0.3 }}
+              className="w-full max-w-sm text-center"
+            >
+              <div className="glass pointer-events-auto rounded-2xl px-6 py-5">
+                <div className="mono text-[10px] uppercase tracking-[0.4em] text-muted">cascade terminal</div>
+                <div className="mt-1 text-[14px] text-text">Real-time news, geopolitics &amp; market cascade intelligence</div>
+                <div className="mt-1 text-[11px] text-muted">$graphLookup · voyage rerank-2.5 · gemini</div>
+                <div className="mt-4 mono text-[9px] uppercase tracking-widest text-muted/70">try a query</div>
+                <div className="mt-1.5 flex flex-wrap justify-center gap-1.5">
+                  {EXAMPLE_QUERIES.map((q) => (
+                    <button
+                      key={q.label}
+                      onClick={() => window.dispatchEvent(new CustomEvent("cascade:search", { detail: q.query }))}
+                      className="rounded-full bg-white/[0.04] px-3 py-1 text-[11px] text-text/85 hover:bg-accent/15 hover:text-accent transition"
+                    >
+                      {q.label}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-      {/* ── Nudge — events loaded, nothing selected ── */}
-      {!showHero && !selectedId && (
-        <div className="pointer-events-none absolute bottom-20 left-1/2 -translate-x-1/2 text-center">
-          <div className="mono text-[10px] uppercase tracking-[0.35em] text-muted/60">
-            click an event to walk its cascade
+        {/* Nudge — sits at the bottom of the middle column */}
+        {!showHero && !selectedId && (
+          <div className="absolute bottom-4 text-center">
+            <div className="mono text-[10px] uppercase tracking-[0.35em] text-muted/60">
+              click an event to walk its cascade
+            </div>
+            <div className="mt-1 flex items-center justify-center gap-2 text-[9px] text-muted/40">
+              <span><span className="kbd">j</span><span className="kbd ml-0.5">k</span> navigate</span>
+              <span>·</span>
+              <span><span className="kbd">/</span> search</span>
+              <span>·</span>
+              <span><span className="kbd">G</span> globe <span className="kbd ml-0.5">C</span> graph</span>
+            </div>
           </div>
-          <div className="mt-1 flex items-center justify-center gap-2 text-[9px] text-muted/40">
-            <span><span className="kbd">j</span><span className="kbd ml-0.5">k</span> navigate</span>
-            <span>·</span>
-            <span><span className="kbd">/</span> search</span>
-            <span>·</span>
-            <span><span className="kbd">G</span> globe <span className="kbd ml-0.5">C</span> graph</span>
-          </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* ── Bottom stats strip ── */}
       <footer className="pointer-events-none absolute inset-x-0 bottom-0 z-20 px-3 pb-3">
