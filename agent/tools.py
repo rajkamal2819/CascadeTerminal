@@ -255,6 +255,7 @@ async def _related_events_fallback(db, root_doc: dict, top_k: int = 8) -> list[d
             "relationship_type": "semantic",
             "cascade_score": round(float(h.get("vs_score") or 0.0), 3),
             "why": why,
+            "event_id": str(h.get("_id", "")),
         })
     return nodes
 
@@ -416,6 +417,21 @@ async def build_cascade(
     ).to_list(length=100)
     company_map = {c["ticker"]: c for c in companies}
 
+    # Bulk-find the most-recent event for each affected ticker — powers
+    # click-to-drill on graph nodes. One aggregation, sorted desc, group-first.
+    latest_events_map: dict[str, str] = {}
+    try:
+        agg = await db.events.aggregate([
+            {"$match": {"tickers": {"$in": affected_tickers}}},
+            {"$sort": {"published_at": -1}},
+            {"$unwind": "$tickers"},
+            {"$match": {"tickers": {"$in": affected_tickers}}},
+            {"$group": {"_id": "$tickers", "event_id": {"$first": "$_id"}}},
+        ]).to_list(length=len(affected_tickers))
+        latest_events_map = {row["_id"]: str(row["event_id"]) for row in agg}
+    except Exception as e:
+        log.warning("latest-event lookup skipped: %s", e)
+
     # Build candidate documents for reranking: "why would this cascade?"
     candidates = []
     for ticker, info in affected.items():
@@ -471,6 +487,7 @@ async def build_cascade(
                 f"(L{hop} hop, weight {doc['_weight']:.2f}). "
                 f"Rerank score: {score}"
             ),
+            "event_id": latest_events_map.get(doc["_ticker"], ""),
         })
 
     # Deduplicate edges

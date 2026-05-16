@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FixedSizeList, type FixedSizeList as FixedSizeListType } from "react-window";
 import { motion } from "framer-motion";
-import { ChevronDown, Network, SlidersHorizontal, X } from "lucide-react";
+import { ChevronDown, Network, Pin, SlidersHorizontal, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useStore } from "@/lib/store";
 
@@ -98,6 +98,8 @@ export function Feed() {
   const setEvents = useStore((s) => s.setEvents);
   const selectedId = useStore((s) => s.selectedEventId);
   const selectEvent = useStore((s) => s.selectEvent);
+  const pinForCompare = useStore((s) => s.pinForCompare);
+  const compareIds = useStore((s) => s.compareIds);
   const status = useStore((s) => s.streamStatus);
 
   const [impact, setImpact] = useState<Impact>("all");
@@ -519,6 +521,18 @@ export function Feed() {
                   <span className="mono ml-auto shrink-0 text-[10px] tabular-nums text-muted">
                     {relativeTime(e.published_at)}
                   </span>
+                  <button
+                    onClick={(ev) => { ev.stopPropagation(); pinForCompare(e.id); }}
+                    title={compareIds?.[0] === e.id ? "Pinned · pin another event to compare" : "Pin to compare"}
+                    className={
+                      "shrink-0 rounded p-0.5 transition " +
+                      (compareIds?.[0] === e.id || compareIds?.[1] === e.id
+                        ? "text-yellow-400"
+                        : "text-muted/40 opacity-0 group-hover:opacity-100 hover:text-accent")
+                    }
+                  >
+                    <Pin size={11} />
+                  </button>
                 </div>
                 <div
                   className={

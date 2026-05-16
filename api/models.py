@@ -75,6 +75,7 @@ class CascadeNode(BaseModel):
     relationship_type: str
     cascade_score: float
     why: str
+    event_id: str = ""  # most-recent event involving this ticker — drives drill-in
 
 
 class CascadeEdge(BaseModel):
@@ -105,6 +106,8 @@ class CascadeResponse(BaseModel):
     hop_counts: dict[str, int] = Field(default_factory=dict)
     message: str = ""
     fallback: str = ""
+    narrative: str = ""  # cached Gemini summary (empty until synth completes)
+    severity: str = ""   # LOW|MEDIUM|HIGH|CRITICAL from synthesis
 
 
 class StatsResponse(BaseModel):

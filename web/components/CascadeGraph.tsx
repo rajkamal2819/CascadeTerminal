@@ -64,6 +64,7 @@ interface PlacedNode extends Vec {
   relType: string;
   isRoot: boolean;
   isBottleneck: boolean;
+  eventId?: string;  // drill-in target (latest event for this ticker)
 }
 
 interface PlacedEdge {
@@ -169,6 +170,7 @@ function buildRadial(cascade: CascadeResponse, W: number, H: number, bottleneck:
         weight: n.cascade_score,
         relType: n.relationship_type, isRoot: false,
         isBottleneck: n.ticker === bottleneck,
+        eventId: n.event_id || undefined,
       });
       posMap.set(n.ticker, { x, y });
     });
@@ -255,6 +257,7 @@ function buildSankey(cascade: CascadeResponse, W: number, H: number, bottleneck:
         weight: n.cascade_score,
         relType: n.relationship_type, isRoot: false,
         isBottleneck: n.ticker === bottleneck,
+        eventId: n.event_id || undefined,
       });
       posMap.set(n.ticker, { x: xc, y });
     });
@@ -387,10 +390,24 @@ function FlowParticle({ edge, delay }: { edge: PlacedEdge; delay: number }) {
 // Main component
 // ============================================================================
 
-export function CascadeGraph() {
-  const cascade = useStore((s) => s.cascade);
+interface CascadeGraphProps {
+  /** Optional override — when provided, the graph renders this cascade
+   * instead of pulling from the global store (used by compare mode). */
+  cascade?: CascadeResponse | null;
+  /** Hide the layout switcher + replay scrubber for compact (compare) view. */
+  compact?: boolean;
+  /** Highlight tickers shared with another cascade (compare mode). */
+  sharedTickers?: Set<string>;
+}
+
+export function CascadeGraph({ cascade: cascadeProp, compact = false, sharedTickers }: CascadeGraphProps = {}) {
+  const storeCascade = useStore((s) => s.cascade);
+  const cascade = cascadeProp !== undefined ? cascadeProp : storeCascade;
   const loading = useStore((s) => s.cascadeLoading);
   const selectedId = useStore((s) => s.selectedEventId);
+  const drillIntoEvent = useStore((s) => s.drillIntoEvent);
+  const breadcrumb = useStore((s) => s.breadcrumb);
+  const popBreadcrumb = useStore((s) => s.popBreadcrumb);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 760, h: 560 });
   const [layout, setLayout] = useState<Layout>("radial");
@@ -496,7 +513,10 @@ export function CascadeGraph() {
   const visibleNode = (n: PlacedNode) => n.hop <= hopThreshold;
   const visibleEdge = (e: PlacedEdge) => e.toHop <= hopThreshold;
 
-  if (!selectedId) {
+  // Empty / loading state only when *driven by the store*. In compare mode
+  // (cascadeProp passed) the parent decides what to show.
+  const usingProp = cascadeProp !== undefined;
+  if (!usingProp && !selectedId) {
     return (
       <div className="flex h-full items-center justify-center text-center">
         <div className="space-y-2 px-8">
@@ -509,7 +529,7 @@ export function CascadeGraph() {
     );
   }
 
-  if (loading) {
+  if (!usingProp && loading) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2">
         <div className="h-8 w-8 rounded-full border border-accent/30 border-t-accent animate-spin" />
@@ -518,7 +538,13 @@ export function CascadeGraph() {
     );
   }
 
-  if (!cascade) return null;
+  if (!cascade) {
+    return usingProp ? (
+      <div className="flex h-full items-center justify-center">
+        <div className="h-6 w-6 rounded-full border border-accent/30 border-t-accent animate-spin" />
+      </div>
+    ) : null;
+  }
 
   const isSemantic = cascade.fallback === "related_events";
 
@@ -618,6 +644,25 @@ export function CascadeGraph() {
           </div>
         </div>
       </div>
+
+      {/* ── Drill-in breadcrumb (only when not compact & user has drilled) ── */}
+      {!compact && breadcrumb.length > 0 && (
+        <div className="pointer-events-auto absolute left-4 top-16 z-10 flex items-center gap-1 rounded-full glass px-2 py-1 text-[10px]">
+          <button
+            onClick={popBreadcrumb}
+            title="Back to previous cascade"
+            className="mono inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-muted hover:bg-white/10 hover:text-text transition"
+          >
+            ← back
+          </button>
+          {breadcrumb.map((b) => (
+            <span key={b.id} className="mono px-1 text-muted/70">
+              {b.label} <span className="text-muted/40">›</span>
+            </span>
+          ))}
+          <span className="mono px-1 font-semibold tracking-wider text-accent">now</span>
+        </div>
+      )}
 
       {/* ── SVG canvas ──────────────────────────────────────────────── */}
       <svg
@@ -733,13 +778,18 @@ export function CascadeGraph() {
         )}
 
         {/* Nodes */}
-        {nodes.filter(visibleNode).map((n, i) => (
+        {nodes.filter(visibleNode).map((n, i) => {
+          const isShared = sharedTickers?.has(n.ticker) ?? false;
+          const isDrillable = !n.isRoot && !!n.eventId;
+          return (
           <motion.g
             key={n.ticker + i}
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             transition={{ type: "spring", stiffness: 110, damping: 24, mass: 1.1, delay: n.isRoot ? 0 : 0.25 + i * 0.06 }}
-            style={{ transformOrigin: `${n.x}px ${n.y}px` }}
+            style={{ transformOrigin: `${n.x}px ${n.y}px`, cursor: isDrillable ? "pointer" : "default" }}
+            onPointerDown={isDrillable ? (ev) => ev.stopPropagation() : undefined}
+            onClick={isDrillable ? () => drillIntoEvent(n.eventId!, n.ticker) : undefined}
           >
             {/* Root pulse rings */}
             {n.isRoot && (
@@ -835,8 +885,22 @@ export function CascadeGraph() {
                 BOTTLENECK
               </text>
             )}
+
+            {/* Compare-mode "shared" ring */}
+            {isShared && !n.isRoot && (
+              <circle
+                cx={n.x} cy={n.y} r={NODE_R + 8}
+                fill="none"
+                stroke="#fbbf24"
+                strokeWidth={2}
+                strokeOpacity={0.85}
+                strokeDasharray="2 3"
+                style={{ filter: "drop-shadow(0 0 6px #fbbf24aa)" }}
+              />
+            )}
           </motion.g>
-        ))}
+          );
+        })}
 
         {/* Sankey column labels */}
         {layout === "sankey" && (

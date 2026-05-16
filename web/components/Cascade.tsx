@@ -173,6 +173,33 @@ export function Cascade() {
     };
   }, [selectedId]);
 
+  // Poll for the Gemini narrative — synthesis runs in the background after
+  // /cascade returns, usually ready within 3-6s.
+  useEffect(() => {
+    if (!selectedId || !cascade || cascade.narrative) return;
+    let cancelled = false;
+    let attempts = 0;
+    const tick = async () => {
+      if (cancelled || attempts >= 8) return;
+      attempts += 1;
+      try {
+        const n = await api.narrative(selectedId);
+        if (cancelled) return;
+        if (n.ready && n.narrative) {
+          useStore.getState().setCascade({
+            ...useStore.getState().cascade!,
+            narrative: n.narrative,
+            severity: n.severity ?? "",
+          });
+          return;
+        }
+      } catch {}
+      setTimeout(tick, 1500);
+    };
+    const id = setTimeout(tick, 2000);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, [selectedId, cascade]);
+
   return (
     <motion.aside
       key="cascade-card"
@@ -267,6 +294,12 @@ export function Cascade() {
                       {POLARITY_LABEL[verdict.tone]}
                     </div>
                     <div className="mt-0.5 text-[11px] leading-snug text-text/90">{verdict.text}</div>
+                    {cascade.narrative && (
+                      <div className="mt-2 rounded-lg border border-accent/15 bg-accent/[0.04] px-2.5 py-1.5 text-[10.5px] leading-relaxed text-text/85">
+                        <div className="mono mb-0.5 text-[8px] uppercase tracking-widest text-accent/70">gemini · narrative</div>
+                        {cascade.narrative}
+                      </div>
+                    )}
                   </div>
                 </div>
                 {/* Polarity stack bar */}

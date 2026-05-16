@@ -49,6 +49,7 @@ export type CascadeNode = {
   relationship_type: string;
   cascade_score: number;
   why: string;
+  event_id?: string;
 };
 
 export type CascadeEdge = {
@@ -76,6 +77,16 @@ export type CascadeResponse = {
   hop_counts: Record<string, number>;
   message?: string;
   fallback?: string;
+  narrative?: string;
+  severity?: string;
+};
+
+export type NarrativeResponse = {
+  ready: boolean;
+  narrative?: string;
+  severity?: string;
+  risk_factors?: string[];
+  confidence?: number;
 };
 
 export type StatsResponse = {
@@ -125,6 +136,9 @@ export const api = {
 
   buildCascade: (body: { event_id: string; max_hops?: number; top_k?: number }) =>
     http<CascadeResponse>("/cascade", { method: "POST", body: JSON.stringify(body) }),
+
+  narrative: (event_id: string) =>
+    http<NarrativeResponse>(`/cascade/by-event/${event_id}/narrative`),
 };
 
 export const SSE_URL = process.env.NEXT_PUBLIC_SSE_URL ?? `${API_URL}/stream`;

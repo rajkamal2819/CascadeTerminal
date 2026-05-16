@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Globe2, Network } from "lucide-react";
 import { Cascade } from "@/components/Cascade";
 import { CascadeGraph } from "@/components/CascadeGraph";
+import { CompareView } from "@/components/CompareView";
 import { Feed } from "@/components/Feed";
 import { Globe } from "@/components/Globe";
 import { ResizableRail } from "@/components/ResizableRail";
@@ -32,6 +33,7 @@ export default function TerminalPage() {
   const selectEvent = useStore((s) => s.selectEvent);
   const selectedId = useStore((s) => s.selectedEventId);
   const cascade = useStore((s) => s.cascade);
+  const compareIds = useStore((s) => s.compareIds);
 
   // Track resizable rail widths so the hero/nudge centre between them
   // instead of being anchored to the viewport (which makes them visually
@@ -69,7 +71,8 @@ export default function TerminalPage() {
     if (cascade && cascade.nodes.length > 0) setViewMode("graph");
   }, [cascade]);
 
-  // ⌘K / "/" → focus search
+  // ⌘K / "/" → focus search · Esc → exit compare mode
+  const clearCompare = useStore((s) => s.clearCompare);
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       const target = ev.target as HTMLElement | null;
@@ -81,20 +84,34 @@ export default function TerminalPage() {
       // G = globe, C = graph
       if (!inField && ev.key.toLowerCase() === "g") setViewMode("globe");
       if (!inField && ev.key.toLowerCase() === "c") setViewMode("graph");
+      // Esc → exit compare mode
+      if (!inField && ev.key === "Escape") clearCompare();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [clearCompare]);
 
   const showHero = events.length === 0;
 
   return (
     <main className="terminal-bg relative h-screen overflow-hidden text-text">
 
-      {/* ── Center canvas: Globe or CascadeGraph ── */}
+      {/* ── Center canvas: Globe, single CascadeGraph, or split CompareView ── */}
       <div className="absolute inset-0">
         <AnimatePresence mode="wait">
-          {viewMode === "globe" ? (
+          {compareIds && compareIds[0] && compareIds[1] ? (
+            <motion.div
+              key="compare"
+              className="absolute inset-0"
+              style={{ left: leftW + 16, right: rightW + 16, top: 64, bottom: 48 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.35 }}
+            >
+              <CompareView leftId={compareIds[0]} rightId={compareIds[1]} />
+            </motion.div>
+          ) : viewMode === "globe" ? (
             <motion.div
               key="globe"
               className="absolute inset-0"
