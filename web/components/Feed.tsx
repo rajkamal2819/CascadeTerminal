@@ -417,14 +417,35 @@ export function Feed() {
       </div>
 
       {emptyFiltered ? (
-        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center text-[11px] text-muted">
-          No events match these filters.
-          {activeFilters.length > 0 && (
-            <button onClick={clearAll} className="ml-1 underline hover:text-text">
-              clear
-            </button>
-          )}
-        </div>
+        events.length === 0 && activeFilters.length === 0 ? (
+          // Skeleton state — no events loaded yet
+          <div className="flex-1 space-y-0">
+            {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+              <div
+                key={i}
+                className="border-b border-white/[0.03] px-3 py-2.5"
+                style={{ opacity: 1 - i * 0.08 }}
+              >
+                <div className="flex items-center gap-2">
+                  <div className="shimmer h-1.5 w-1.5 rounded-full" />
+                  <div className="shimmer h-3 w-10 rounded" />
+                  <div className="shimmer h-2.5 w-14 rounded" />
+                  <div className="shimmer ml-auto h-2.5 w-6 rounded" />
+                </div>
+                <div className="shimmer mt-2 h-3 w-3/4 rounded" />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center px-6 text-center text-[11px] text-muted">
+            No events match these filters.
+            {activeFilters.length > 0 && (
+              <button onClick={clearAll} className="ml-1 underline hover:text-text">
+                clear
+              </button>
+            )}
+          </div>
+        )
       ) : (
         <FixedSizeList
           ref={listRef as never}

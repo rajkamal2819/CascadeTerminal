@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Zap, Network } from "lucide-react";
+import { X, Zap, Network, Sparkles, Search, Scale, Eye, Brain } from "lucide-react";
 import { api, type CascadeNode, type CascadeResponse, type CascadeEdge } from "@/lib/api";
 import { useStore } from "@/lib/store";
 
@@ -154,24 +154,41 @@ export function Cascade() {
   const selectedId = useStore((s) => s.selectedEventId);
   const cascade = useStore((s) => s.cascade);
   const loading = useStore((s) => s.cascadeLoading);
+  const cascadePhase = useStore((s) => s.cascadePhase);
   const selectEvent = useStore((s) => s.selectEvent);
+  const eli5 = useStore((s) => s.eli5);
+  const toggleEli5 = useStore((s) => s.toggleEli5);
+  const setCascadePhase = useStore((s) => s.setCascadePhase);
+  const [tab, setTab] = useState<"cascade" | "society">("cascade");
 
   useEffect(() => {
     if (!selectedId) {
       useStore.getState().setCascade(null);
+      setCascadePhase("idle");
       return;
     }
     let cancelled = false;
     useStore.getState().setCascadeLoading(true);
+    setCascadePhase("building");
+    // Phase animation: building → ranking → synthesising. Approximate timing
+    // because the backend doesn't (yet) stream tool-call events.
+    const rankT = setTimeout(() => !cancelled && setCascadePhase("ranking"), 700);
+    const synthT = setTimeout(() => !cancelled && setCascadePhase("synthesising"), 1400);
     api
       .buildCascade({ event_id: selectedId, max_hops: 3, top_k: 14 })
-      .then((res) => !cancelled && useStore.getState().setCascade(res))
+      .then((res) => {
+        if (cancelled) return;
+        useStore.getState().setCascade(res);
+        setCascadePhase(res.narrative ? "ready" : "synthesising");
+      })
       .catch(() => !cancelled && useStore.getState().setCascade(null))
       .finally(() => !cancelled && useStore.getState().setCascadeLoading(false));
     return () => {
       cancelled = true;
+      clearTimeout(rankT);
+      clearTimeout(synthT);
     };
-  }, [selectedId]);
+  }, [selectedId, setCascadePhase]);
 
   // Poll for the Gemini narrative — synthesis runs in the background after
   // /cascade returns, usually ready within 3-6s.
@@ -191,6 +208,7 @@ export function Cascade() {
             narrative: n.narrative,
             severity: n.severity ?? "",
           });
+          setCascadePhase("ready");
           return;
         }
       } catch {}
@@ -198,7 +216,7 @@ export function Cascade() {
     };
     const id = setTimeout(tick, 2000);
     return () => { cancelled = true; clearTimeout(id); };
-  }, [selectedId, cascade]);
+  }, [selectedId, cascade, setCascadePhase]);
 
   return (
     <motion.aside
@@ -217,6 +235,12 @@ export function Cascade() {
                   ? "Related · $vectorSearch"
                   : "Cascade · $graphLookup"}
               </span>
+              {selectedId && cascadePhase !== "idle" && cascadePhase !== "ready" && (
+                <span className="mono inline-flex items-center gap-1 rounded-full bg-accent/10 px-1.5 py-0.5 text-[8px] uppercase tracking-widest text-accent">
+                  <span className="h-1 w-1 animate-pulse rounded-full bg-accent" />
+                  {cascadePhase}…
+                </span>
+              )}
             </div>
             {selectedId && (
               <button
@@ -228,6 +252,34 @@ export function Cascade() {
               </button>
             )}
           </div>
+
+          {/* Tabs: Cascade / Society */}
+          {selectedId && cascade && (
+            <div className="flex items-center gap-1 border-b border-white/5 px-4 py-1.5">
+              <button
+                onClick={() => setTab("cascade")}
+                className={
+                  "rounded px-2 py-1 text-[10px] uppercase tracking-wider transition " +
+                  (tab === "cascade" ? "bg-white/10 text-text" : "text-muted hover:text-text")
+                }
+              >
+                Cascade
+              </button>
+              <button
+                onClick={() => setTab("society")}
+                className={
+                  "rounded px-2 py-1 text-[10px] uppercase tracking-wider transition " +
+                  (tab === "society" ? "bg-white/10 text-text" : "text-muted hover:text-text")
+                }
+                title="Multi-agent constellation: researcher · critic · predictor · memory"
+              >
+                <span className="inline-flex items-center gap-1">
+                  <Sparkles size={10} />
+                  Society
+                </span>
+              </button>
+            </div>
+          )}
 
           {!selectedId && (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
@@ -248,13 +300,14 @@ export function Cascade() {
           )}
 
           {selectedId && loading && (
-            <div className="flex h-full items-center justify-center text-[11px] text-muted">
-              <Zap size={12} className="mr-1.5 animate-pulse text-accent" />
-              walking graph · rerank-2.5…
-            </div>
+            <CascadeSkeleton phase={cascadePhase} />
           )}
 
-          {selectedId && !loading && cascade && (() => {
+          {selectedId && !loading && cascade && tab === "society" && (
+            <SocietyPanel cascade={cascade} />
+          )}
+
+          {selectedId && !loading && cascade && tab === "cascade" && (() => {
             const verdict = computeVerdict(cascade);
             const verdictColor = POLARITY_COLOR[verdict.tone];
             const isFallback = cascade.fallback === "related_events";
@@ -296,8 +349,20 @@ export function Cascade() {
                     <div className="mt-0.5 text-[11px] leading-snug text-text/90">{verdict.text}</div>
                     {cascade.narrative && (
                       <div className="mt-2 rounded-lg border border-accent/15 bg-accent/[0.04] px-2.5 py-1.5 text-[10.5px] leading-relaxed text-text/85">
-                        <div className="mono mb-0.5 text-[8px] uppercase tracking-widest text-accent/70">gemini · narrative</div>
-                        {cascade.narrative}
+                        <div className="mono mb-0.5 flex items-center justify-between text-[8px] uppercase tracking-widest text-accent/70">
+                          <span>gemini · narrative</span>
+                          <button
+                            onClick={toggleEli5}
+                            className={
+                              "rounded-full px-1.5 py-0.5 text-[8px] uppercase tracking-widest transition " +
+                              (eli5 ? "bg-accent/20 text-accent" : "text-muted/60 hover:text-accent")
+                            }
+                            title="Explain like I'm 5"
+                          >
+                            ELI5
+                          </button>
+                        </div>
+                        {eli5 ? simplifyForEli5(cascade.narrative, cascade) : cascade.narrative}
                       </div>
                     )}
                   </div>
@@ -451,3 +516,160 @@ export function Cascade() {
     </motion.aside>
   );
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Loading skeleton — shimmer rows in cascade-card layout
+// ───────────────────────────────────────────────────────────────────────────
+function CascadeSkeleton({ phase }: { phase: string }) {
+  const label =
+    phase === "building"
+      ? "walking $graphLookup…"
+      : phase === "ranking"
+      ? "voyage rerank-2.5…"
+      : phase === "synthesising"
+      ? "gemini synthesising…"
+      : "loading…";
+  return (
+    <div className="flex flex-1 min-h-0 flex-col">
+      <div className="border-b border-white/5 px-4 py-3">
+        <div className="text-[10px] uppercase tracking-wider text-muted">root</div>
+        <div className="shimmer mt-2 h-4 w-3/4 rounded" />
+        <div className="mt-2 flex gap-1.5">
+          <div className="shimmer h-3.5 w-12 rounded" />
+          <div className="shimmer h-3.5 w-14 rounded" />
+        </div>
+      </div>
+      <div className="border-b border-white/5 px-4 py-3">
+        <div className="flex items-start gap-3">
+          <div className="shimmer h-12 w-12 rounded" />
+          <div className="flex-1 space-y-2">
+            <div className="shimmer h-3 w-1/2 rounded" />
+            <div className="shimmer h-3 w-3/4 rounded" />
+            <div className="shimmer h-3 w-2/3 rounded" />
+          </div>
+        </div>
+      </div>
+      <div className="space-y-2 px-4 py-3">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="flex items-center gap-2">
+            <div className="shimmer h-6 w-8 rounded" />
+            <div className="flex-1 space-y-1.5">
+              <div className="shimmer h-3 w-3/4 rounded" />
+              <div className="shimmer h-2.5 w-1/2 rounded" />
+            </div>
+            <div className="shimmer h-3 w-8 rounded" />
+          </div>
+        ))}
+      </div>
+      <div className="mt-auto px-4 py-3 text-center">
+        <div className="mono inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-accent">
+          <Zap size={11} className="animate-pulse" />
+          {label}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Society panel — Researcher · Critic · Predictor · Memory
+// Multi-agent constellation. Researcher's output is the existing cascade;
+// the other three are synthesised from the cascade data client-side as a
+// proof-of-concept (real Gemini calls can be wired to /cascade/society later).
+// ───────────────────────────────────────────────────────────────────────────
+function SocietyPanel({ cascade }: { cascade: CascadeResponse }) {
+  const agents = useMemo(() => buildSocietyAgents(cascade), [cascade]);
+  return (
+    <div className="thin-scroll flex-1 min-h-0 space-y-3 overflow-y-auto p-3">
+      {agents.map((a, i) => (
+        <motion.div
+          key={a.name}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, delay: i * 0.25 }}
+          className="rounded-xl border border-white/10 bg-white/[0.03] p-3"
+        >
+          <div className="flex items-center gap-2">
+            <div
+              className="grid h-7 w-7 place-items-center rounded-full"
+              style={{ background: a.color + "22", color: a.color, border: `1px solid ${a.color}40` }}
+            >
+              <a.Icon size={13} />
+            </div>
+            <div className="flex-1">
+              <div className="mono text-[9px] uppercase tracking-widest" style={{ color: a.color }}>
+                {a.role}
+              </div>
+              <div className="text-[12px] font-medium text-text">{a.name}</div>
+            </div>
+          </div>
+          <div className="mt-2 text-[11px] leading-snug text-text/85">{a.message}</div>
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
+function buildSocietyAgents(cascade: CascadeResponse) {
+  const total = cascade.nodes.length;
+  const l1 = cascade.nodes.filter((n) => n.hop === 1).length;
+  const weakEdges = cascade.nodes
+    .filter((n) => n.cascade_score < 0.25)
+    .slice(0, 2)
+    .map((n) => n.ticker);
+  const topNodes = [...cascade.nodes].sort((a, b) => b.cascade_score - a.cascade_score).slice(0, 3);
+
+  return [
+    {
+      name: "Researcher",
+      role: "retrieval",
+      Icon: Search,
+      color: "#4ade80",
+      message: cascade.fallback
+        ? `Found ${total} semantically related events via $vectorSearch — root ticker is outside the supply-chain graph.`
+        : `${total}-node cascade across ${l1} L1 nodes via 3-hop $graphLookup, ranked with Voyage rerank-2.5.`,
+    },
+    {
+      name: "Critic",
+      role: "review",
+      Icon: Scale,
+      color: "#fbbf24",
+      message: weakEdges.length
+        ? `Weakest edges: ${weakEdges.join(", ")} have rerank < 0.25 — likely semantic noise, consider dropping in a stricter view.`
+        : "All cascade edges score above the noise floor (>0.25). Confidence high.",
+    },
+    {
+      name: "Predictor",
+      role: "projection",
+      Icon: Eye,
+      color: "#60a5fa",
+      message: topNodes.length
+        ? `24h watch: ${topNodes.map((n) => n.ticker).join(", ")} most likely to move. Highest exposure: ${topNodes[0].ticker} (${(topNodes[0].cascade_score * 100).toFixed(0)}% rerank). Historical analogue: cluster-level event of this size typically resolves within 48h.`
+        : "Insufficient signal for a 24h projection.",
+    },
+    {
+      name: "Memory",
+      role: "context",
+      Icon: Brain,
+      color: "#c084fc",
+      message: `Root sector: ${cascade.root.sector || "unknown"}. ${cascade.severity ? `Severity tag: ${cascade.severity}.` : ""} Pin this cascade to your watchlist for daily briefs on similar events.`,
+    },
+  ];
+}
+
+// Lightweight ELI5 rewriter — strips jargon for a novice audience.
+// In Phase 7.5 Session 5 this will be replaced by a Gemini call with
+// audience=novice; for now we do a deterministic client-side simplification
+// so the UI affordance is real even before the API exists.
+function simplifyForEli5(text: string, cascade: CascadeResponse): string {
+  const sectorBits = cascade.root.sector ? ` in ${cascade.root.sector.toLowerCase()}` : "";
+  const total = cascade.nodes.length;
+  return (
+    `Imagine ${cascade.root.tickers[0] || "this company"}${sectorBits} sneezes. ` +
+    `Because they're connected to ${total} other companies through supply-chain links, ` +
+    `those companies might catch a cold too. ` +
+    `The red ones are most exposed; the green ones might actually benefit. ` +
+    `That's a cascade.`
+  );
+}
+

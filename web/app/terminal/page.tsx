@@ -11,7 +11,9 @@ import { Feed } from "@/components/Feed";
 import { Globe } from "@/components/Globe";
 import { ResizableRail } from "@/components/ResizableRail";
 import { SearchBar } from "@/components/SearchBar";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { LiveStatusPill } from "@/components/LiveStatusPill";
+import { TimeMachine } from "@/components/TimeMachine";
+import { WatchMode } from "@/components/WatchMode";
 import { api, type StatsResponse } from "@/lib/api";
 import { useLiveEvents } from "@/lib/sse";
 import { useStore } from "@/lib/store";
@@ -29,6 +31,11 @@ export default function TerminalPage() {
   useLiveEvents();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("globe");
+  const [isWatchMode, setIsWatchMode] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setIsWatchMode(new URLSearchParams(window.location.search).get("watch") === "1");
+  }, []);
   const events = useStore((s) => s.events);
   const selectEvent = useStore((s) => s.selectEvent);
   const selectedId = useStore((s) => s.selectedEventId);
@@ -93,6 +100,10 @@ export default function TerminalPage() {
 
   const showHero = events.length === 0;
 
+  if (isWatchMode) {
+    return <WatchMode />;
+  }
+
   return (
     <main className="terminal-bg relative h-screen overflow-hidden text-text">
 
@@ -147,9 +158,7 @@ export default function TerminalPage() {
             <span className="h-1.5 w-1.5 rounded-full bg-accent pulse-soft" style={{ boxShadow: "0 0 10px var(--accent-glow)" }} />
             CASCADE
           </Link>
-          <span className="hidden text-[10px] uppercase tracking-[0.2em] text-muted sm:inline">
-            news · geopolitics · markets
-          </span>
+          <LiveStatusPill stats={stats} />
         </div>
 
         <div className="pointer-events-auto flex flex-1 justify-center">
@@ -182,7 +191,6 @@ export default function TerminalPage() {
               <span className="hidden sm:inline">Graph</span>
             </button>
           </div>
-          <ThemeToggle />
         </div>
       </header>
 
@@ -226,8 +234,8 @@ export default function TerminalPage() {
               className="w-full max-w-sm text-center"
             >
               <div className="glass pointer-events-auto rounded-2xl px-6 py-5">
-                <div className="mono text-[10px] uppercase tracking-[0.4em] text-muted">cascade terminal</div>
-                <div className="mt-1 text-[14px] text-text">Real-time news, geopolitics &amp; market cascade intelligence</div>
+                <div className="mono text-[10px] uppercase tracking-[0.4em] text-muted">planetary nervous system</div>
+                <div className="mt-1 text-[14px] text-text">Watch news, ships, quakes &amp; filings cascade in real time</div>
                 <div className="mt-1 text-[11px] text-muted">$graphLookup · voyage rerank-2.5 · gemini</div>
                 <div className="mt-4 mono text-[9px] uppercase tracking-widest text-muted/70">try a query</div>
                 <div className="mt-1.5 flex flex-wrap justify-center gap-1.5">
@@ -272,7 +280,7 @@ export default function TerminalPage() {
             <Stat label="critical" value={stats?.impact_counts?.critical ?? 0} color="var(--critical)" />
             <Stat label="high" value={stats?.impact_counts?.high ?? 0} color="var(--high)" />
           </div>
-          <div className="hidden text-muted sm:block">mongo atlas · voyage · gemini</div>
+          <TimeMachine />
         </div>
       </footer>
 
