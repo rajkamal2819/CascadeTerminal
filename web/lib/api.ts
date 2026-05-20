@@ -139,6 +139,21 @@ export const api = {
 
   narrative: (event_id: string) =>
     http<NarrativeResponse>(`/cascade/by-event/${event_id}/narrative`),
+
+  chartSearch: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`${API_URL}/multimodal/search`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json() as Promise<{
+      matches: Array<{ id: string; headline: string; tickers: string[]; score: number }>;
+      count: number;
+      note?: string;
+    }>;
+  },
 };
 
 export const SSE_URL = process.env.NEXT_PUBLIC_SSE_URL ?? `${API_URL}/stream`;

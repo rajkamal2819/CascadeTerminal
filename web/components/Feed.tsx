@@ -31,7 +31,14 @@ const SOURCE_LABEL: Record<string, string> = {
   finnhub_ws: "Ticks",
   alpha_vantage: "TA",
   reddit: "Social",
+  gdelt_news: "GDELT",
+  usgs_quake: "USGS",
+  noaa_alert: "NOAA",
+  opensky_jet: "Flight",
+  opensky_cluster: "Cluster",
+  ais_stall: "Ship",
   test: "Seed",
+  chart: "Chart",
 };
 
 // Sector palette — each sector gets a subtle hue so the chip rail reads at a glance.
@@ -48,6 +55,10 @@ const SECTOR_COLOR: Record<string, string> = {
   Utilities: "#facc15",
   "Real Estate": "#f87171",
   Geopolitics: "#ef4444",
+  Geophysical: "#fb7185",
+  Weather: "#38bdf8",
+  Shipping: "#22d3ee",
+  "Corporate Aviation": "#a3a3a3",
   Macro: "#94a3b8",
   Crypto: "#a855f7",
 };

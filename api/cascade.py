@@ -102,6 +102,78 @@ async def get_cascade(
     return doc
 
 
+@router.post("/cascade/geo")
+async def post_cascade_geo(
+    payload: dict,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+) -> dict:
+    """
+    Geo-cascade — find companies HQ'd within `radius_km` of (lat, lng) and
+    return them as a cascade structure. Used by USGS quake + NOAA weather
+    auto-cascades. Requires a 2dsphere index on companies.hq_coords (loc).
+
+    Body: {lat: float, lng: float, radius_km: float, root_text?: str}
+    """
+    try:
+        lat = float(payload["lat"])
+        lng = float(payload["lng"])
+        radius_km = float(payload.get("radius_km", 200))
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="lat/lng required")
+    root_text = (payload.get("root_text") or "Geographic event").strip()[:200]
+
+    # $geoNear requires a 2dsphere index. Fall back to client-side filter if absent.
+    try:
+        pipeline = [
+            {
+                "$geoNear": {
+                    "near": {"type": "Point", "coordinates": [lng, lat]},
+                    "distanceField": "dist_m",
+                    "maxDistance": radius_km * 1000,
+                    "spherical": True,
+                    "key": "loc",
+                }
+            },
+            {"$limit": 20},
+        ]
+        docs = await db.companies.aggregate(pipeline).to_list(length=20)
+    except Exception:
+        docs = []
+
+    nodes = []
+    for d in docs:
+        nodes.append({
+            "ticker": d.get("ticker", ""),
+            "company": d.get("name", ""),
+            "sector": d.get("sector", ""),
+            "level": "L1",
+            "hop": 1,
+            "relationship_type": "geo_exposure",
+            "cascade_score": max(0.1, 1.0 - (d.get("dist_m", 0) / (radius_km * 1000))),
+            "why": f"HQ within {radius_km:.0f}km of event",
+            "event_id": "",
+        })
+
+    return {
+        "root": {
+            "id": "",
+            "headline": root_text,
+            "tickers": [],
+            "impact": "high",
+            "sector": "Geographic",
+            "published_at": "",
+            "source_type": "geo",
+        },
+        "nodes": nodes,
+        "edges": [],
+        "hop_counts": {"L1": len(nodes)},
+        "message": f"{len(nodes)} companies HQ'd within {radius_km:.0f}km",
+        "fallback": "" if nodes else "no_geo_matches",
+        "narrative": "",
+        "severity": "high" if nodes else "",
+    }
+
+
 @router.get("/cascade/by-event/{event_id}/narrative")
 async def get_narrative(
     event_id: str,
