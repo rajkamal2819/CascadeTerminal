@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Search, Loader2, ImagePlus, X } from "lucide-react";
+import { Search, Loader2, ImagePlus, FileText, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { api, type SearchHit } from "@/lib/api";
 
@@ -11,7 +11,7 @@ export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => vo
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  const [imageChip, setImageChip] = useState<{ url: string; name: string } | null>(null);
+  const [imageChip, setImageChip] = useState<{ url: string; name: string; isPdf: boolean } | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const runQuery = async (query: string) => {
@@ -33,8 +33,9 @@ export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => vo
   const runChartSearch = async (file: File) => {
     setLoading(true);
     setError(null);
+    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
     try {
-      const res = await api.chartSearch(file);
+      const res = isPdf ? await api.pdfSearch(file) : await api.chartSearch(file);
       // Map multimodal matches → SearchHit shape so the dropdown renders.
       const mapped: SearchHit[] = res.matches.map((m) => ({
         id: m.id,
@@ -42,7 +43,7 @@ export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => vo
         tickers: m.tickers,
         sector: "",
         impact: "",
-        source_type: "chart",
+        source_type: isPdf ? "pdf" : "chart",
         published_at: "",
         rerank_score: m.score,
       }));
@@ -59,12 +60,13 @@ export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => vo
 
   const onFile = (f: File | null) => {
     if (!f) return;
-    setImageChip({ url: URL.createObjectURL(f), name: f.name });
+    const isPdf = f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf");
+    setImageChip({ url: isPdf ? "" : URL.createObjectURL(f), name: f.name, isPdf });
     void runChartSearch(f);
   };
 
   const clearImage = () => {
-    if (imageChip) URL.revokeObjectURL(imageChip.url);
+    if (imageChip && imageChip.url) URL.revokeObjectURL(imageChip.url);
     setImageChip(null);
   };
 
@@ -106,7 +108,7 @@ export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => vo
         <Search size={14} className="text-muted" />
         {imageChip && (
           <span className="inline-flex items-center gap-1 rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent">
-            <ImagePlus size={10} />
+            {imageChip.isPdf ? <FileText size={10} /> : <ImagePlus size={10} />}
             <span className="max-w-[80px] truncate">{imageChip.name}</span>
             <button type="button" onClick={clearImage} className="opacity-70 hover:opacity-100">
               <X size={10} />
@@ -118,20 +120,20 @@ export function SearchBar({ onResults }: { onResults?: (hits: SearchHit[]) => vo
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onFocus={() => hits.length > 0 && setOpen(true)}
-          placeholder={imageChip ? "Or refine with text…" : "ask or drop a chart · ‘OPEC supply cut’ · ‘Taiwan strait’"}
+          placeholder={imageChip ? "Or refine with text…" : "ask or drop a chart/PDF · ‘OPEC supply cut’ · ‘Taiwan strait’"}
           className="flex-1 bg-transparent text-[13px] text-text placeholder:text-muted/70 outline-none"
         />
         <input
           ref={fileRef}
           type="file"
-          accept="image/*"
+          accept="image/*,application/pdf"
           className="hidden"
           onChange={(e) => onFile(e.target.files?.[0] ?? null)}
         />
         <button
           type="button"
           onClick={() => fileRef.current?.click()}
-          title="Drop a chart"
+          title="Drop a chart or PDF"
           className="rounded-full p-1 text-muted transition hover:bg-white/10 hover:text-accent"
         >
           <ImagePlus size={13} />

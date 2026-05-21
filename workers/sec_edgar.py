@@ -182,6 +182,16 @@ async def _sector_for(ticker: str) -> str | None:
     return doc.get("sector") if doc else None
 
 
+async def _allowed_tickers() -> set[str]:
+    """Restrict SEC ingestion to the curated large-cap universe (the
+    `companies` collection). Without this filter the worker ingests every
+    8-K from SEC's full ~13k-filer map and the feed drowns in small-cap
+    noise like SATA / NXPLW that aren't in any cascade graph anyway."""
+    db = get_db()
+    cur = db.companies.find({}, {"ticker": 1, "_id": 0})
+    return {d["ticker"].upper() async for d in cur if d.get("ticker")}
+
+
 async def poll_once() -> None:
     async with httpx.AsyncClient() as client:
         ticker_map = await _load_ticker_map(client)
@@ -191,17 +201,23 @@ async def poll_once() -> None:
     if feed.bozo:
         jlog("warn", "sec.feed.bozo", reason=str(feed.bozo_exception)[:200])
 
+    allowed = await _allowed_tickers()
     drafts: list[EventDraft] = []
     seen_tickers: set[str] = set()
+    skipped_unmapped = 0
+    skipped_smallcap = 0
 
     for entry in feed.entries:
         cik = _extract_cik(entry)
         info = ticker_map.get(cik) if cik else None
         if not info:
-            # Unmapped filers (private companies, funds) — skip for now.
+            skipped_unmapped += 1
             continue
 
         ticker = info["ticker"]
+        if ticker not in allowed:
+            skipped_smallcap += 1
+            continue
         seen_tickers.add(ticker)
         title = getattr(entry, "title", "") or ""
         summary = getattr(entry, "summary", "") or ""
@@ -235,6 +251,8 @@ async def poll_once() -> None:
         inserted=inserted,
         modified=modified,
         tickers=len(seen_tickers),
+        skipped_unmapped=skipped_unmapped,
+        skipped_smallcap=skipped_smallcap,
     )
 
 

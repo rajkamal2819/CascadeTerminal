@@ -57,8 +57,6 @@ const HQ: Record<string, { lat: number; lng: number; name: string; city: string 
   BABA: { lat: 30.2741, lng: 120.1551, name: "Alibaba", city: "Hangzhou" },
 };
 
-const DEFAULT_HQ = { lat: 40.7128, lng: -74.006, name: "—", city: "" };
-
 const REL_COLOR: Record<string, string> = {
   supplier: "#4ade80",
   customer: "#60a5fa",
@@ -99,7 +97,16 @@ const IMPACT_COLOR: Record<string, string> = {
 export function Globe() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const globeRef = useRef<any>(null);
-  const events = useStore((s) => s.events);
+  const eventsAll = useStore((s) => s.events);
+  const timeOffset = useStore((s) => s.timeOffset);
+  const events = useMemo(() => {
+    if (timeOffset <= 0) return eventsAll;
+    const cutoff = Date.now() - timeOffset * 24 * 3600 * 1000;
+    return eventsAll.filter((e) => {
+      const t = e.published_at ? new Date(e.published_at).getTime() : 0;
+      return t > 0 && t <= cutoff;
+    });
+  }, [eventsAll, timeOffset]);
   const cascade = useStore((s) => s.cascade);
   const selectEvent = useStore((s) => s.selectEvent);
   const [size, setSize] = useState({ width: 800, height: 600 });
@@ -122,47 +129,64 @@ export function Globe() {
   }, []);
 
   // Background event pulses — sized by impact, carry event id for click-to-select.
+  // Skip events whose ticker isn't in the HQ map (no DEFAULT_HQ fallback) —
+  // otherwise unmapped small-cap tickers all pile up at the same default
+  // coordinate and read as a giant pole on the globe.
   const points = useMemo(() => {
-    return events.slice(0, 150).map((e) => {
-      const t = e.tickers[0];
-      const hq = (t && HQ[t]) || DEFAULT_HQ;
+    const out: Array<{
+      id: string; lat: number; lng: number; altitude: number; radius: number;
+      color: string; ticker: string; impact: string; headline: string;
+    }> = [];
+    for (const e of events.slice(0, 300)) {
+      const t = e.tickers.find((tk) => HQ[tk]);
+      if (!t) continue;
+      const hq = HQ[t];
       const isCrit = e.impact === "critical";
       const isHigh = e.impact === "high";
-      return {
+      out.push({
         id: e.id,
         lat: hq.lat,
         lng: hq.lng,
         altitude: isCrit ? 0.42 : isHigh ? 0.25 : 0.08,
         radius: isCrit ? 0.95 : isHigh ? 0.7 : 0.45,
         color: IMPACT_COLOR[e.impact] ?? "#8b96a8",
-        ticker: t ?? "",
+        ticker: t,
         impact: e.impact,
         headline: e.headline || e.source_type,
-      };
-    });
+      });
+      if (out.length >= 150) break;
+    }
+    return out;
   }, [events]);
 
   // Cascade arcs — polarity-coloured. Gradient runs from root colour (red) to
   // the destination polarity colour, so the eye reads damage propagating *outward*.
   const arcs = useMemo(() => {
     if (!cascade) return [];
-    return cascade.edges.slice(0, 80).map((edge) => {
-      const from = HQ[edge.from] ?? DEFAULT_HQ;
-      const to = HQ[edge.to] ?? DEFAULT_HQ;
+    const out: Array<{
+      startLat: number; startLng: number; endLat: number; endLng: number;
+      color: [string, string]; stroke: number; hop: number; polarity: string;
+    }> = [];
+    for (const edge of cascade.edges.slice(0, 80)) {
+      const from = HQ[edge.from];
+      const to = HQ[edge.to];
+      // Skip edges where either end is unmapped — drawing them into a
+      // default coord makes phantom poles on the globe.
+      if (!from || !to) continue;
       const polarity = POLARITY[edge.type] ?? "related";
       const destColor = POLARITY_COLOR[polarity];
-      return {
+      out.push({
         startLat: from.lat,
         startLng: from.lng,
         endLat: to.lat,
         endLng: to.lng,
-        // Gradient: red root → polarity destination
         color: edge.hop === 1 ? ["#ff4d6d", destColor] : [destColor, destColor],
         stroke: 0.45 + edge.weight * 0.55,
         hop: edge.hop,
         polarity,
-      };
-    });
+      });
+    }
+    return out;
   }, [cascade]);
 
   // Concentration ring — when ≥ 40% of cascade HQs cluster in one region,
@@ -201,11 +225,13 @@ export function Globe() {
     if (!cascade) return [];
     const out: Array<{ lat: number; lng: number; color: string; maxR: number; period: number }> = [];
     for (const t of cascade.root.tickers) {
-      const hq = HQ[t] ?? DEFAULT_HQ;
+      const hq = HQ[t];
+      if (!hq) continue;
       out.push({ lat: hq.lat, lng: hq.lng, color: "#ff4d6d", maxR: 5, period: 1300 });
     }
     for (const n of cascade.nodes) {
-      const hq = HQ[n.ticker] ?? DEFAULT_HQ;
+      const hq = HQ[n.ticker];
+      if (!hq) continue;
       const polarity = POLARITY[n.relationship_type] ?? "related";
       out.push({
         lat: hq.lat,
@@ -261,12 +287,16 @@ export function Globe() {
     c.rotateSpeed = 0.7;
   }, [cascade, shown]);
 
-  // When a cascade lands, fly toward the root.
+  // When a cascade lands, fly toward the first ticker we know coords for.
+  // If none of the root or node tickers are in the HQ map, stay where we are
+  // rather than snapping the camera to a default location.
   useEffect(() => {
     const g = globeRef.current;
     if (!g?.pointOfView || !cascade) return;
-    const t = cascade.root.tickers[0];
-    const hq = (t && HQ[t]) || DEFAULT_HQ;
+    const candidates = [...cascade.root.tickers, ...cascade.nodes.map((n) => n.ticker)];
+    const t = candidates.find((tk) => HQ[tk]);
+    if (!t) return;
+    const hq = HQ[t];
     g.pointOfView({ lat: hq.lat, lng: hq.lng, altitude: 1.7 }, 1400);
   }, [cascade]);
 

@@ -78,6 +78,32 @@ export default function TerminalPage() {
     if (cascade && cascade.nodes.length > 0) setViewMode("graph");
   }, [cascade]);
 
+  // ?replay=<slug> → fetch the seeded scenario event and auto-select it.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const slug = new URLSearchParams(window.location.search).get("replay");
+    if (!slug) return;
+    let alive = true;
+    (async () => {
+      try {
+        // Pull recent events and match on `replay` field client-side.
+        // (Avoids needing a new dedicated API endpoint for one demo hook.)
+        const r = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080"}/events?hours_back=72&limit=200`,
+          { cache: "no-store" },
+        );
+        const data = await r.json();
+        const match = (data.events ?? []).find(
+          (e: { id: string; headline?: string }) =>
+            (e as { replay?: string }).replay === slug ||
+            (e.headline ?? "").toLowerCase().includes(slug.replace(/-/g, " ")),
+        );
+        if (alive && match?.id) selectEvent(match.id);
+      } catch {}
+    })();
+    return () => { alive = false; };
+  }, [selectEvent]);
+
   // ⌘K / "/" → focus search · Esc → exit compare mode
   const clearCompare = useStore((s) => s.clearCompare);
   useEffect(() => {
@@ -136,7 +162,8 @@ export default function TerminalPage() {
           ) : (
             <motion.div
               key="graph"
-              className="absolute inset-0 flex items-center justify-center"
+              className="absolute flex items-center justify-center"
+              style={{ left: leftW + 16, right: rightW + 16, top: 72, bottom: 48 }}
               initial={{ opacity: 0, scale: 0.94 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 1.04 }}
@@ -148,9 +175,10 @@ export default function TerminalPage() {
         </AnimatePresence>
       </div>
 
-      {/* ── Top bar ── */}
-      <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-4 px-4 py-3">
-        <div className="pointer-events-auto flex items-center gap-3">
+      {/* ── Top bar ── 3-column grid so SearchBar is geometrically centred
+              regardless of how wide the side cells get. */}
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-20 grid grid-cols-[1fr_minmax(360px,560px)_1fr] items-center gap-4 px-4 py-3">
+        <div className="pointer-events-auto flex items-center gap-3 justify-self-start">
           <Link
             href="/"
             className="glass mono inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[11px] font-semibold tracking-[0.25em] text-text"
@@ -161,11 +189,11 @@ export default function TerminalPage() {
           <LiveStatusPill stats={stats} />
         </div>
 
-        <div className="pointer-events-auto flex flex-1 justify-center">
+        <div className="pointer-events-auto justify-self-center w-full max-w-[560px]">
           <SearchBar onResults={(hits) => { if (hits[0]) selectEvent(hits[0].id); }} />
         </div>
 
-        <div className="pointer-events-auto flex items-center gap-2">
+        <div className="pointer-events-auto flex items-center gap-2 justify-self-end">
           {/* View-mode toggle */}
           <div className="glass flex items-center gap-0.5 rounded-full p-0.5">
             <button
@@ -199,7 +227,7 @@ export default function TerminalPage() {
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.35, delay: 0.05 }}
-        className="pointer-events-auto absolute bottom-12 left-3 top-16 z-10 hidden md:block"
+        className="pointer-events-auto absolute bottom-12 left-3 top-[72px] z-10 hidden md:block"
       >
         <ResizableRail side="left" defaultWidth={340} className="h-full">
           <Feed />
@@ -211,7 +239,7 @@ export default function TerminalPage() {
         initial={{ opacity: 0, x: 20 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.35, delay: 0.1 }}
-        className="pointer-events-auto absolute bottom-12 right-3 top-16 z-10 hidden md:block"
+        className="pointer-events-auto absolute bottom-12 right-3 top-[72px] z-10 hidden md:block"
       >
         <ResizableRail side="right" defaultWidth={360} className="h-full">
           <Cascade />
@@ -221,7 +249,7 @@ export default function TerminalPage() {
       {/* ── Centred middle column (lives between the rails so the hero
               and nudge are visually centred in the visible canvas) ── */}
       <div
-        className="pointer-events-none absolute top-16 bottom-12 z-10 hidden md:flex flex-col items-center justify-center"
+        className="pointer-events-none absolute top-[72px] bottom-12 z-10 hidden md:flex flex-col items-center justify-center"
         style={{ left: leftW + 16, right: rightW + 16 }}
       >
         <AnimatePresence>
@@ -285,7 +313,7 @@ export default function TerminalPage() {
       </footer>
 
       {/* ── Mobile: stack ── */}
-      <div className="absolute inset-x-2 bottom-12 top-16 z-10 md:hidden">
+      <div className="absolute inset-x-2 bottom-12 top-[72px] z-10 md:hidden">
         <div className="grid h-full grid-rows-2 gap-2">
           <div className="min-h-0"><Feed /></div>
           <div className="min-h-0"><Cascade /></div>

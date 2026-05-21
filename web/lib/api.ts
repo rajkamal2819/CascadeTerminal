@@ -16,6 +16,7 @@ export type Event = {
   source_url?: string;
   published_at?: string | null;
   has_cascade?: boolean;
+  replay?: string;
 };
 
 export type EventList = {
@@ -134,8 +135,17 @@ export const api = {
   search: (body: { query: string; sector?: string; impact?: string; days_back?: number; limit?: number }) =>
     http<SearchResponse>("/search", { method: "POST", body: JSON.stringify(body) }),
 
-  buildCascade: (body: { event_id: string; max_hops?: number; top_k?: number }) =>
+  buildCascade: (body: { event_id: string; max_hops?: number; top_k?: number; device_id?: string }) =>
     http<CascadeResponse>("/cascade", { method: "POST", body: JSON.stringify(body) }),
+
+  logCascadeView: (body: { device_id: string; event_id: string; root_ticker?: string; sector?: string; headline?: string }) =>
+    http<{ ok: boolean }>("/memory/cascade-view", { method: "POST", body: JSON.stringify(body) }),
+
+  recentMemory: (device_id: string, limit = 20) =>
+    http<MemoryRecentResponse>(`/memory/recent?device_id=${encodeURIComponent(device_id)}&limit=${limit}`),
+
+  forgetMemory: (device_id: string) =>
+    http<{ ok: boolean; deleted: number }>(`/memory/${encodeURIComponent(device_id)}`, { method: "DELETE" }),
 
   narrative: (event_id: string) =>
     http<NarrativeResponse>(`/cascade/by-event/${event_id}/narrative`),
@@ -154,6 +164,51 @@ export const api = {
       note?: string;
     }>;
   },
+
+  pdfSearch: async (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(`${API_URL}/multimodal/pdf`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json() as Promise<{
+      matches: Array<{ id: string; headline: string; tickers: string[]; score: number }>;
+      count: number;
+      note?: string;
+    }>;
+  },
+
+  society: (event_id: string) =>
+    http<SocietyResponse>(`/cascade/by-event/${event_id}/society`),
+};
+
+export type MemoryRecentItem = {
+  event_id: string;
+  root_ticker?: string;
+  sector?: string;
+  headline?: string;
+  viewed_at?: string;
+};
+
+export type MemoryRecentResponse = {
+  items: MemoryRecentItem[];
+  count: number;
+};
+
+export type SocietyResponse = {
+  ready: boolean;
+  done: boolean;
+  critic?: { message: string; weak_tickers?: string[]; _source?: "gemini" | "local" | "timeout" };
+  predictor?: {
+    message: string;
+    projections?: Array<{ ticker: string; direction: string; confidence: number; rationale: string }>;
+    analogue?: string;
+    _source?: "gemini" | "local" | "timeout";
+  };
+  memory?: { message: string; tags?: string[]; _history_size?: number; _source?: "gemini" | "local" | "fallback" };
+  eli5?: string;
 };
 
 export const SSE_URL = process.env.NEXT_PUBLIC_SSE_URL ?? `${API_URL}/stream`;

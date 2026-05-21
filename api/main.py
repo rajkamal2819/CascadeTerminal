@@ -226,6 +226,7 @@ def _serialize_event(
         published_at=doc.get("published_at"),
         ingested_at=doc.get("ingested_at"),
         has_cascade=has_cascade,
+        replay=(doc.get("replay") or ""),
     )
 
 

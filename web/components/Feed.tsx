@@ -112,6 +112,7 @@ export function Feed() {
   const pinForCompare = useStore((s) => s.pinForCompare);
   const compareIds = useStore((s) => s.compareIds);
   const status = useStore((s) => s.streamStatus);
+  const timeOffset = useStore((s) => s.timeOffset);
 
   const [impact, setImpact] = useState<Impact>("all");
   const [cascadableOnly, setCascadableOnly] = useState(false);
@@ -156,6 +157,14 @@ export function Feed() {
   // Client-side filters (cheap, no roundtrip)
   const filtered = useMemo(() => {
     let xs = events;
+    // Time-machine: hide events newer than (now − timeOffset days).
+    if (timeOffset > 0) {
+      const cutoff = Date.now() - timeOffset * 24 * 3600 * 1000;
+      xs = xs.filter((e) => {
+        const t = e.published_at ? new Date(e.published_at).getTime() : 0;
+        return t > 0 && t <= cutoff;
+      });
+    }
     if (impact !== "all") xs = xs.filter((e) => e.impact === impact);
     if (cascadableOnly) xs = xs.filter((e) => e.has_cascade);
     if (sort === "impact") {
@@ -163,7 +172,7 @@ export function Feed() {
       xs = [...xs].sort((a, b) => (w[b.impact] ?? 0) - (w[a.impact] ?? 0));
     }
     return xs;
-  }, [events, impact, cascadableOnly, sort]);
+  }, [events, impact, cascadableOnly, sort, timeOffset]);
 
   // Interleave day-group headers into the list (only when sorted by newest)
   type ListItem =
