@@ -6,6 +6,46 @@ import { useStore } from "@/lib/store";
 
 const GlobeGL = dynamic(() => import("react-globe.gl"), { ssr: false });
 
+// Subsolar point — where the sun is overhead right now. Drives the
+// day/night marker so the globe feels tied to real wall-clock time.
+function subsolarPoint(now: Date): { lat: number; lng: number } {
+  const utcHours = now.getUTCHours() + now.getUTCMinutes() / 60 + now.getUTCSeconds() / 3600;
+  const lng = -15 * (utcHours - 12);
+  const start = Date.UTC(now.getUTCFullYear(), 0, 0);
+  const day = Math.floor((now.getTime() - start) / 86_400_000);
+  const lat = 23.44 * Math.sin(((day - 81) * 2 * Math.PI) / 365);
+  return { lat, lng: ((lng + 540) % 360) - 180 };
+}
+
+// "Fresh arrival" window — points that landed within this many ms get the
+// oversized halo + shockwave ring. Tuned so the eye registers them as new
+// without the globe feeling jittery.
+const FRESH_WINDOW_MS = 3_500;
+
+// Cascade hop reveal delays (ms). Hop-1 arcs draw immediately, hop-2 lands
+// 600ms later, hop-3 at 1200ms — the eye literally watches damage radiate
+// out from the root instead of seeing one tangled snapshot.
+// Keyed by hop number directly so HOP_REVEAL_DELAYS[1] === 0 (no off-by-one).
+const HOP_REVEAL_DELAYS: Record<number, number> = { 1: 0, 2: 600, 3: 1200 };
+
+// Per-hop dash speed (ms to traverse arc). Fast hop-1 = urgent primary
+// blow; slow hop-3 = distant ripple. Asymmetry is the whole point.
+const HOP_DASH_MS: Record<number, number> = { 1: 1100, 2: 1700, 3: 2400 };
+
+// Per-hop stroke width. Hop-1 is bold (primary), hop-3 thinner (ripple).
+// Tubes are rendered against a dark globe so anything under ~0.6 disappears.
+const HOP_STROKE: Record<number, number> = { 1: 1.8, 2: 1.3, 3: 0.9 };
+
+// Per-hop arc altitude — hop-1 hugs the globe (immediate), hop-3 arches
+// high (distant ripple). Adds 3D depth to the cascade.
+const HOP_ALT: Record<number, number> = { 1: 0.35, 2: 0.55, 3: 0.75 };
+
+// Coarse geographic bin size for label clustering (degrees). 2° ≈ 220km
+// at the equator, smaller toward the poles. Tight enough to keep distinct
+// cities apart (NYC vs Boston), loose enough that all of Silicon Valley
+// collapses into one label.
+const LABEL_BIN_DEG = 2.0;
+
 // HQ coordinates + city label for the most-referenced tickers.
 // City names are shown when a cascade is active so judges can read
 // "where" cascades originate / propagate to.
@@ -57,15 +97,13 @@ const HQ: Record<string, { lat: number; lng: number; name: string; city: string 
   BABA: { lat: 30.2741, lng: 120.1551, name: "Alibaba", city: "Hangzhou" },
 };
 
-const DEFAULT_HQ = { lat: 40.7128, lng: -74.006, name: "—", city: "" };
-
 const REL_COLOR: Record<string, string> = {
-  supplier: "#4ade80",
-  customer: "#60a5fa",
+  supplier: "#34d399",
+  customer: "#38bdf8",
   peer: "#c084fc",
   sector: "#fbbf24",
   derivative: "#f472b6",
-  semantic: "#94a3b8",
+  semantic: "#64748b",
 };
 
 // Polarity model — how a NEGATIVE shock at the root propagates through this edge.
@@ -81,29 +119,95 @@ const POLARITY: Record<string, "damage" | "exposed" | "benefit" | "related"> = {
   derivative: "benefit",
   semantic: "related",
 };
+// Polarity arc colours — chosen to read cleanly against the cyan/violet
+// atmosphere and the dark earth-night base map. Rose for damage (cool red,
+// less "Christmas" than #f43f5e), tangerine for exposure (distinct from
+// the amber high-impact dot), emerald for benefit, slate for related.
 const POLARITY_COLOR: Record<string, string> = {
-  damage: "#ff4d6d",
-  exposed: "#fbbf24",
-  benefit: "#4ade80",
-  related: "#94a3b8",
+  damage: "#f43f5e",
+  exposed: "#fb923c",
+  benefit: "#34d399",
+  related: "#64748b",
 };
 
+// Impact dot colours — sit at fixed positions on the globe, so they need
+// to be unambiguous against the night earth. Critical = rose to match
+// damage arcs; high = amber; medium/low fade into slate.
 const IMPACT_COLOR: Record<string, string> = {
-  critical: "#ff4d6d",
+  critical: "#f43f5e",
   high: "#fbbf24",
-  medium: "#8b96a8",
-  low: "#4b5563",
+  medium: "#64748b",
+  low: "#334155",
 };
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export function Globe() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const globeRef = useRef<any>(null);
-  const events = useStore((s) => s.events);
+  const eventsAll = useStore((s) => s.events);
+  const timeOffset = useStore((s) => s.timeOffset);
+  const events = useMemo(() => {
+    if (timeOffset <= 0) return eventsAll;
+    const cutoff = Date.now() - timeOffset * 24 * 3600 * 1000;
+    return eventsAll.filter((e) => {
+      const t = e.published_at ? new Date(e.published_at).getTime() : 0;
+      return t > 0 && t <= cutoff;
+    });
+  }, [eventsAll, timeOffset]);
   const cascade = useStore((s) => s.cascade);
   const selectEvent = useStore((s) => s.selectEvent);
+  const streamStatus = useStore((s) => s.streamStatus);
+  const lastEventAt = useStore((s) => s.lastEventAt);
+  const lastHeartbeatAt = useStore((s) => s.lastHeartbeatAt);
   const [size, setSize] = useState({ width: 800, height: 600 });
   const [shown, setShown] = useState(false);
+  // Wall-clock tick — drives the "Ns ago" chip and the recency-decay sizing.
+  // 1 Hz is enough; pulses use CSS animation, not React re-render.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Cascade hop reveal state. Counts which hops are currently drawable.
+  // Bumped 0→1→2→3 by staggered setTimeouts when a new cascade lands so
+  // the eye sees the shockwave radiate out instead of all arcs at once.
+  // cascadeStartedAt drives the root "fire" pulse for the first 1.2s.
+  const [revealedHops, setRevealedHops] = useState(0);
+  const [cascadeStartedAt, setCascadeStartedAt] = useState<number | null>(null);
+  // Hops that "just landed" — drives the one-shot impact-flash ring on
+  // destination nodes for ~1.5s. Map<hop, startedAtMs>.
+  const [hopLandings, setHopLandings] = useState<Record<number, number>>({});
+
+  useEffect(() => {
+    if (!cascade) {
+      setRevealedHops(0);
+      setCascadeStartedAt(null);
+      setHopLandings({});
+      return;
+    }
+    const startedAt = Date.now();
+    setCascadeStartedAt(startedAt);
+    setRevealedHops(0);
+    setHopLandings({});
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    // Schedule each hop's reveal + the impact-flash at that hop's
+    // *destination* (synced with the arc-completion moment, not the
+    // reveal moment, so the flash lands when the comet arrives).
+    for (let hop = 1; hop <= 3; hop++) {
+      const reveal = HOP_REVEAL_DELAYS[hop] ?? hop * 600;
+      const arcDur = HOP_DASH_MS[hop] ?? 1800;
+      timers.push(setTimeout(() => setRevealedHops((h) => Math.max(h, hop)), reveal));
+      timers.push(
+        setTimeout(() => {
+          setHopLandings((m) => ({ ...m, [hop]: Date.now() }));
+        }, reveal + arcDur),
+      );
+    }
+    return () => {
+      for (const t of timers) clearTimeout(t);
+    };
+  }, [cascade]);
 
   useEffect(() => {
     const t = setTimeout(() => setShown(true), 30);
@@ -121,49 +225,120 @@ export function Globe() {
     };
   }, []);
 
-  // Background event pulses — sized by impact, carry event id for click-to-select.
+  // Background event pulses. Two-axis sizing:
+  //   • impact (critical > high > medium > low) sets the base radius
+  //   • recency decays the radius — events older than ~3h fade into the floor
+  // Plus: events that landed in the last FRESH_WINDOW_MS get an oversized
+  // "fresh" multiplier so the eye catches new arrivals without needing the
+  // user to read a feed entry.
   const points = useMemo(() => {
-    return events.slice(0, 150).map((e) => {
-      const t = e.tickers[0];
-      const hq = (t && HQ[t]) || DEFAULT_HQ;
+    const out: Array<{
+      id: string; lat: number; lng: number; altitude: number; radius: number;
+      color: string; ticker: string; impact: string; headline: string;
+      fresh: boolean; arrivedAt: number | null;
+    }> = [];
+    for (const e of events.slice(0, 300)) {
+      const t = e.tickers.find((tk) => HQ[tk]);
+      if (!t) continue;
+      const hq = HQ[t];
       const isCrit = e.impact === "critical";
       const isHigh = e.impact === "high";
-      return {
+      const baseR = isCrit ? 0.95 : isHigh ? 0.7 : 0.45;
+      const baseA = isCrit ? 0.42 : isHigh ? 0.25 : 0.08;
+      // Recency decay: 1.0 at arrival → 0.55 after ~3h half-life. Stays
+      // visible long enough to read the globe as "alive over hours", not
+      // "dead 30min after a news event". Uses _arrivedAt when available,
+      // else falls back to published_at.
+      const stamp = e._arrivedAt ?? (e.published_at ? Date.parse(e.published_at) : now);
+      const ageMin = Math.max(0, (now - stamp) / 60_000);
+      const decay = 0.55 + 0.45 * Math.exp(-ageMin / 180);
+      const arrivedAt = e._arrivedAt ?? null;
+      const fresh = arrivedAt !== null && now - arrivedAt < FRESH_WINDOW_MS;
+      const freshMul = fresh ? 1.6 : 1.0;
+      out.push({
         id: e.id,
         lat: hq.lat,
         lng: hq.lng,
-        altitude: isCrit ? 0.42 : isHigh ? 0.25 : 0.08,
-        radius: isCrit ? 0.95 : isHigh ? 0.7 : 0.45,
-        color: IMPACT_COLOR[e.impact] ?? "#8b96a8",
-        ticker: t ?? "",
+        altitude: baseA * (fresh ? 1.5 : 1) * Math.max(0.6, decay),
+        radius: baseR * decay * freshMul,
+        color: IMPACT_COLOR[e.impact] ?? "#64748b",
+        ticker: t,
         impact: e.impact,
         headline: e.headline || e.source_type,
-      };
-    });
-  }, [events]);
+        fresh,
+        arrivedAt,
+      });
+      if (out.length >= 150) break;
+    }
+    return out;
+  }, [events, now]);
 
-  // Cascade arcs — polarity-coloured. Gradient runs from root colour (red) to
-  // the destination polarity colour, so the eye reads damage propagating *outward*.
+  // Cascade arcs — polarity-coloured comets that radiate out by hop.
+  //   • Hop-1 reveals immediately, hop-2 at +600ms, hop-3 at +1200ms.
+  //   • Stroke + altitude shrink/grow by hop so the cascade looks like a
+  //     real 3D shockwave dome (low+thick near root, high+thin at edges).
+  //   • Color fades by hop (eye drawn to freshest ripple).
+  // The `dashLength=0.05, dashGap=0.95` config below turns each arc into
+  // a *comet head* travelling its path — far more "signal moving" than
+  // the long ticker-tape dashes we had before.
   const arcs = useMemo(() => {
     if (!cascade) return [];
-    return cascade.edges.slice(0, 80).map((edge) => {
-      const from = HQ[edge.from] ?? DEFAULT_HQ;
-      const to = HQ[edge.to] ?? DEFAULT_HQ;
+    type Arc = {
+      startLat: number; startLng: number; endLat: number; endLng: number;
+      color: [string, string]; stroke: number; hop: number; polarity: string;
+      dashTime: number; dashLen: number; dashGap: number; altitude: number;
+    };
+    const out: Arc[] = [];
+    const withAlpha = (hex: string, a: number): string => {
+      const h = hex.replace("#", "");
+      const r = parseInt(h.substring(0, 2), 16);
+      const g = parseInt(h.substring(2, 4), 16);
+      const b = parseInt(h.substring(4, 6), 16);
+      return `rgba(${r},${g},${b},${a})`;
+    };
+    for (const edge of cascade.edges.slice(0, 80)) {
+      if (edge.hop > revealedHops) continue;
+      const from = HQ[edge.from];
+      const to = HQ[edge.to];
+      if (!from || !to) continue;
       const polarity = POLARITY[edge.type] ?? "related";
       const destColor = POLARITY_COLOR[polarity];
-      return {
-        startLat: from.lat,
-        startLng: from.lng,
-        endLat: to.lat,
-        endLng: to.lng,
-        // Gradient: red root → polarity destination
-        color: edge.hop === 1 ? ["#ff4d6d", destColor] : [destColor, destColor],
-        stroke: 0.45 + edge.weight * 0.55,
+      const alpha = edge.hop === 1 ? 1.0 : edge.hop === 2 ? 0.8 : 0.55;
+      const startColor = edge.hop === 1 ? "#f43f5e" : destColor;
+      const baseStroke = (HOP_STROKE[edge.hop] ?? 1.0) + edge.weight * 0.4;
+      const altitude = HOP_ALT[edge.hop] ?? 0.35;
+      // Layer 1 — base "wire" — thin, always-visible path so the eye sees
+      // *where* the cascade connects (NVDA → TSM, SF → Hsinchu) even
+      // between comet passes. Without this the arc was 95% invisible.
+      out.push({
+        startLat: from.lat, startLng: from.lng,
+        endLat: to.lat, endLng: to.lng,
+        color: [withAlpha(startColor, alpha * 0.55), withAlpha(destColor, alpha * 0.55)],
+        stroke: Math.max(0.7, baseStroke * 0.6),
         hop: edge.hop,
         polarity,
-      };
-    });
-  }, [cascade]);
+        // No dash animation on the wire — full continuous line.
+        dashTime: 0,
+        dashLen: 1.0,
+        dashGap: 0.0,
+        altitude,
+      });
+      // Layer 2 — comet head — bright moving pulse along the path.
+      out.push({
+        startLat: from.lat, startLng: from.lng,
+        endLat: to.lat, endLng: to.lng,
+        color: [withAlpha(startColor, alpha), withAlpha(destColor, alpha)],
+        stroke: baseStroke,
+        hop: edge.hop,
+        polarity,
+        dashTime: HOP_DASH_MS[edge.hop] ?? 1800,
+        dashLen: 0.18,
+        dashGap: 0.82,
+        altitude,
+      });
+    }
+    return out;
+  }, [cascade, revealedHops]);
 
   // Concentration ring — when ≥ 40% of cascade HQs cluster in one region,
   // draw a large slow-pulsing ring around the centroid. Tells the user
@@ -193,19 +368,31 @@ export function Globe() {
     if (pct < 0.4 || best.count < 3) return null;
     const cLat = best.lats.reduce((a, b) => a + b, 0) / best.lats.length;
     const cLng = best.lngs.reduce((a, b) => a + b, 0) / best.lngs.length;
-    return { lat: cLat, lng: cLng, color: "#ff4d6d", maxR: 18, period: 4200, pct };
+    return { lat: cLat, lng: cLng, color: "#f43f5e", maxR: 18, period: 4200, pct };
   }, [cascade]);
 
   // Halos: root + cascade tickers (polarity colour) + concentration ring.
+  // The root pulse "fires" rapidly (period 600ms) for the first 1.2s of a
+  // cascade — visibly launches the propagation — then settles to 1300ms.
   const rings = useMemo(() => {
     if (!cascade) return [];
     const out: Array<{ lat: number; lng: number; color: string; maxR: number; period: number }> = [];
+    const fireUntil = (cascadeStartedAt ?? 0) + 1200;
+    const rootFiring = cascadeStartedAt !== null && now < fireUntil;
     for (const t of cascade.root.tickers) {
-      const hq = HQ[t] ?? DEFAULT_HQ;
-      out.push({ lat: hq.lat, lng: hq.lng, color: "#ff4d6d", maxR: 5, period: 1300 });
+      const hq = HQ[t];
+      if (!hq) continue;
+      out.push({
+        lat: hq.lat, lng: hq.lng, color: "#f43f5e",
+        maxR: rootFiring ? 7 : 5,
+        period: rootFiring ? 600 : 1300,
+      });
     }
     for (const n of cascade.nodes) {
-      const hq = HQ[n.ticker] ?? DEFAULT_HQ;
+      const hq = HQ[n.ticker];
+      if (!hq) continue;
+      // Only show node halos for hops that have been revealed.
+      if (n.hop > revealedHops) continue;
       const polarity = POLARITY[n.relationship_type] ?? "related";
       out.push({
         lat: hq.lat,
@@ -219,33 +406,204 @@ export function Globe() {
       out.push(concentrationRing);
     }
     return out;
-  }, [cascade, concentrationRing]);
+  }, [cascade, concentrationRing, cascadeStartedAt, revealedHops, now]);
 
-  // City labels — when a cascade is active, name the cities at root + node HQs.
-  // When idle, label the top-impact event cities so the globe always teaches
-  // the viewer something about where the news is happening.
-  const labels = useMemo(() => {
-    const seen = new Set<string>();
-    const out: Array<{ lat: number; lng: number; text: string; size: number; color: string }> = [];
-    const add = (ticker: string, color: string, size: number) => {
-      const hq = HQ[ticker];
-      if (!hq || seen.has(ticker)) return;
-      seen.add(ticker);
-      out.push({ lat: hq.lat, lng: hq.lng, text: `${ticker} · ${hq.city}`, size, color });
-    };
-    if (cascade) {
-      for (const t of cascade.root.tickers) add(t, "#ff4d6d", 0.9);
-      for (const n of cascade.nodes.slice(0, 10)) add(n.ticker, REL_COLOR[n.relationship_type] ?? "#fff", 0.7);
-    } else {
-      for (const e of events.slice(0, 40)) {
-        if (e.impact === "critical" || e.impact === "high") {
-          const t = e.tickers[0];
-          if (t && HQ[t]) add(t, IMPACT_COLOR[e.impact], 0.65);
-        }
+  // Impact flash rings — one-shot bright ring at each hop's destination
+  // node, fired the moment the comet *lands* there. Lasts ~1.5s then
+  // fades. This is the visual moment a judge sees the cascade hit.
+  const flashRings = useMemo(() => {
+    if (!cascade) return [];
+    const out: Array<{ lat: number; lng: number; color: string; maxR: number; period: number }> = [];
+    for (const [hopStr, startedAt] of Object.entries(hopLandings)) {
+      if (now - startedAt > 1500) continue;
+      const hop = Number(hopStr);
+      for (const n of cascade.nodes) {
+        if (n.hop !== hop) continue;
+        const hq = HQ[n.ticker];
+        if (!hq) continue;
+        const polarity = POLARITY[n.relationship_type] ?? "related";
+        out.push({
+          lat: hq.lat, lng: hq.lng,
+          color: POLARITY_COLOR[polarity],
+          maxR: 6, period: 500,
+        });
       }
     }
-    return out.slice(0, 15);
+    return out;
+  }, [cascade, hopLandings, now]);
+
+  // Shockwave rings for events that arrived in the last FRESH_WINDOW_MS.
+  // These overlay on the cascade rings so a live news drop is visible even
+  // mid-cascade. Critical events get a brighter, larger wave.
+  const freshRings = useMemo(() => {
+    const out: Array<{ lat: number; lng: number; color: string; maxR: number; period: number }> = [];
+    const seen = new Set<string>();
+    for (const p of points) {
+      if (!p.fresh || seen.has(p.ticker)) continue;
+      seen.add(p.ticker);
+      const isCrit = p.impact === "critical";
+      out.push({
+        lat: p.lat,
+        lng: p.lng,
+        color: p.color,
+        maxR: isCrit ? 7 : 4.5,
+        period: isCrit ? 900 : 1200,
+      });
+    }
+    return out;
+  }, [points]);
+
+  // Ambient idle arcs — when no cascade is selected, sweep slow cyan arcs
+  // between the most-recently-active mapped tickers. We bias toward
+  // *long* arcs (intercontinental) over short ones because globe-spanning
+  // motion reads as a planetary network; Bay-Area-to-Bay-Area reads as
+  // a tangle. Arcs rotate which pair every 20s.
+  const ambientArcs = useMemo(() => {
+    if (cascade) return [];
+    const recents: string[] = [];
+    const seen = new Set<string>();
+    for (const e of events) {
+      const t = e.tickers.find((tk) => HQ[tk]);
+      if (!t || seen.has(t)) continue;
+      seen.add(t);
+      recents.push(t);
+      if (recents.length >= 10) break;
+    }
+    if (recents.length < 2) return [];
+    type Pair = { a: string; b: string; dist: number };
+    const pairs: Pair[] = [];
+    for (let i = 0; i < recents.length; i++) {
+      for (let j = i + 1; j < recents.length; j++) {
+        const A = HQ[recents[i]];
+        const B = HQ[recents[j]];
+        if (!A || !B) continue;
+        const d = Math.hypot(A.lat - B.lat, A.lng - B.lng);
+        pairs.push({ a: recents[i], b: recents[j], dist: d });
+      }
+    }
+    pairs.sort((p, q) => q.dist - p.dist);
+    const out: Array<{
+      startLat: number; startLng: number; endLat: number; endLng: number;
+      color: [string, string]; stroke: number;
+      dashTime: number; dashLen: number; dashGap: number; altitude: number; hop: number;
+    }> = [];
+    const offset = Math.floor(now / 20_000) % Math.max(1, pairs.length);
+    for (let i = 0; i < Math.min(4, pairs.length); i++) {
+      const p = pairs[(i + offset) % pairs.length];
+      const a = HQ[p.a];
+      const b = HQ[p.b];
+      if (!a || !b) continue;
+      out.push({
+        startLat: a.lat, startLng: a.lng, endLat: b.lat, endLng: b.lng,
+        color: ["rgba(34,211,238,0.0)", "rgba(34,211,238,0.9)"],
+        stroke: 0.9,
+        dashTime: 4000,
+        dashLen: 0.35,
+        dashGap: 0.65,
+        altitude: 0.4,
+        hop: 0,
+      });
+    }
+    return out;
+  }, [cascade, events, now]);
+
+  // Idle shimmer rings — slow low-opacity halos on the top-3 most-active
+  // mapped tickers. Globe always has *something* breathing, even when
+  // the news flow is quiet. Suppressed during cascade so they don't
+  // clutter the propagation.
+  const shimmerRings = useMemo(() => {
+    if (cascade) return [];
+    const out: Array<{ lat: number; lng: number; color: string; maxR: number; period: number }> = [];
+    const seen = new Set<string>();
+    for (const e of events) {
+      const t = e.tickers.find((tk) => HQ[tk]);
+      if (!t || seen.has(t)) continue;
+      seen.add(t);
+      const hq = HQ[t];
+      if (!hq) continue;
+      const impactColor = IMPACT_COLOR[e.impact] ?? "#38bdf8";
+      out.push({
+        lat: hq.lat, lng: hq.lng,
+        color: impactColor,
+        maxR: 3.5, period: 3500,
+      });
+      if (out.length >= 3) break;
+    }
+    return out;
   }, [cascade, events]);
+
+  // City labels — bin nearby HQs into ~220km cells so Silicon Valley
+  // (AAPL/NVDA/GOOGL/META/AMD/INTC/AVGO/AMAT/SMCI all within 50km) doesn't
+  // pile up into one unreadable smear. The "winning" ticker for a bin is
+  // the highest-priority one (root > earlier-hop > higher cascade_score),
+  // and the label shows `+N` when others share the bin.
+  const labels = useMemo(() => {
+    type Cand = { ticker: string; color: string; size: number; priority: number };
+    const bins = new Map<string, Cand[]>();
+    const push = (ticker: string, color: string, size: number, priority: number) => {
+      const hq = HQ[ticker];
+      if (!hq) return;
+      const key = `${Math.floor(hq.lat / LABEL_BIN_DEG)}_${Math.floor(hq.lng / LABEL_BIN_DEG)}`;
+      const arr = bins.get(key) ?? [];
+      if (arr.some((c) => c.ticker === ticker)) return;
+      arr.push({ ticker, color, size, priority });
+      bins.set(key, arr);
+    };
+    if (cascade) {
+      for (const t of cascade.root.tickers) push(t, "#f43f5e", 0.95, 100);
+      for (const n of cascade.nodes.slice(0, 25)) {
+        const c = REL_COLOR[n.relationship_type] ?? "#fff";
+        // Earlier hops + higher score win the label slot in a crowded bin.
+        push(n.ticker, c, 0.75, 50 - n.hop * 10 + n.cascade_score * 5);
+      }
+    } else {
+      for (const e of events.slice(0, 80)) {
+        const t = e.tickers[0];
+        if (!t || !HQ[t]) continue;
+        const color = IMPACT_COLOR[e.impact] ?? "#94a3b8";
+        const p = e.impact === "critical" ? 30 : e.impact === "high" ? 20 : 5;
+        push(t, color, 0.7, p);
+      }
+    }
+    // For each bin, pick the highest-priority ticker and annotate with +N.
+    const out: Array<{ lat: number; lng: number; text: string; size: number; color: string }> = [];
+    const winners: Cand[] = [];
+    for (const arr of bins.values()) {
+      arr.sort((a, b) => b.priority - a.priority);
+      const top = arr[0];
+      const hq = HQ[top.ticker];
+      if (!hq) continue;
+      const extra = arr.length - 1;
+      const text = extra > 0 ? `${top.ticker} +${extra}` : `${top.ticker} · ${hq.city}`;
+      winners.push(top);
+      out.push({ lat: hq.lat, lng: hq.lng, text, size: top.size, color: top.color });
+    }
+    // Sort by priority desc, cap to 12 so the globe stays legible.
+    out.sort((a, b) => {
+      const pa = winners.find((w) => a.text.startsWith(w.ticker))?.priority ?? 0;
+      const pb = winners.find((w) => b.text.startsWith(w.ticker))?.priority ?? 0;
+      return pb - pa;
+    });
+    return out.slice(0, 12);
+  }, [cascade, events]);
+
+  // Sun marker — subsolar point updated each render-tick. Renders as a
+  // bright label so the globe is visibly anchored to real wall-clock UTC.
+  const sunLabel = useMemo(() => {
+    const sub = subsolarPoint(new Date(now));
+    return [{ lat: sub.lat, lng: sub.lng, text: "☀ noon", size: 0.7, color: "#fde68a" }];
+  }, [now]);
+
+  // Merge cascade arcs with ambient idle arcs so we don't pass two layers.
+  const allArcs = useMemo(() => [...arcs, ...ambientArcs], [arcs, ambientArcs]);
+  // Merge cascade rings with fresh-arrival shockwaves, hop-landing impact
+  // flashes, and idle shimmer rings.
+  const allRings = useMemo(
+    () => [...rings, ...freshRings, ...flashRings, ...shimmerRings],
+    [rings, freshRings, flashRings, shimmerRings],
+  );
+  // Merge labels with the sun marker.
+  const allLabels = useMemo(() => [...labels, ...sunLabel], [labels, sunLabel]);
 
   // Idle auto-rotate. Constrain zoom so users can dive in without pixelation.
   useEffect(() => {
@@ -261,12 +619,16 @@ export function Globe() {
     c.rotateSpeed = 0.7;
   }, [cascade, shown]);
 
-  // When a cascade lands, fly toward the root.
+  // When a cascade lands, fly toward the first ticker we know coords for.
+  // If none of the root or node tickers are in the HQ map, stay where we are
+  // rather than snapping the camera to a default location.
   useEffect(() => {
     const g = globeRef.current;
     if (!g?.pointOfView || !cascade) return;
-    const t = cascade.root.tickers[0];
-    const hq = (t && HQ[t]) || DEFAULT_HQ;
+    const candidates = [...cascade.root.tickers, ...cascade.nodes.map((n) => n.ticker)];
+    const t = candidates.find((tk) => HQ[tk]);
+    if (!t) return;
+    const hq = HQ[t];
     g.pointOfView({ lat: hq.lat, lng: hq.lng, altitude: 1.7 }, 1400);
   }, [cascade]);
 
@@ -282,8 +644,8 @@ export function Globe() {
           globeImageUrl="//unpkg.com/three-globe/example/img/earth-night.jpg"
           bumpImageUrl="//unpkg.com/three-globe/example/img/earth-topology.png"
           showAtmosphere
-          atmosphereColor={cascade ? "#ff4d6d" : "#3b82f6"}
-          atmosphereAltitude={0.28}
+          atmosphereColor={cascade ? "#a855f7" : "#22d3ee"}
+          atmosphereAltitude={cascade ? 0.20 : 0.24}
           pointsData={points}
           pointAltitude={(d: any) => d.altitude}
           pointColor={(d: any) => d.color}
@@ -292,33 +654,44 @@ export function Globe() {
           pointLabel={(d: any) =>
             `<div style="font-family:ui-monospace;font-size:11px;padding:6px 8px;background:rgba(8,12,20,0.92);border:1px solid rgba(255,255,255,0.1);border-radius:6px;color:#e6edf3;max-width:280px;">
               <div style="font-weight:600;color:${d.color}">${d.ticker} · ${(d.impact || "").toUpperCase()}</div>
-              <div style="margin-top:2px;color:#8b96a8;font-family:system-ui">${(d.headline || "").slice(0, 120)}</div>
+              <div style="margin-top:2px;color:#64748b;font-family:system-ui">${(d.headline || "").slice(0, 120)}</div>
             </div>`
           }
           onPointClick={(p: any) => p?.id && selectEvent(p.id)}
-          arcsData={arcs}
+          arcsData={allArcs}
           arcColor={(d: any) => d.color}
           arcStroke={(d: any) => d.stroke}
-          arcDashLength={0.4}
-          arcDashGap={0.12}
-          arcDashAnimateTime={(d: any) => 1700 + d.hop * 300}
-          arcAltitudeAutoScale={0.55}
-          ringsData={rings}
+          arcDashLength={(d: any) => d.dashLen ?? 0.18}
+          arcDashGap={(d: any) => d.dashGap ?? 0.82}
+          arcDashAnimateTime={(d: any) => d.dashTime ?? 1700}
+          arcAltitude={(d: any) => d.altitude ?? 0.3}
+          ringsData={allRings}
           ringColor={(d: any) => () => d.color}
           ringMaxRadius={(d: any) => d.maxR}
           ringPropagationSpeed={2.6}
           ringRepeatPeriod={(d: any) => d.period}
-          labelsData={labels}
+          labelsData={allLabels}
           labelLat={(d: any) => d.lat}
           labelLng={(d: any) => d.lng}
           labelText={(d: any) => d.text}
           labelSize={(d: any) => d.size}
-          labelDotRadius={0.25}
+          labelDotRadius={0.035}
           labelColor={(d: any) => d.color}
           labelResolution={2}
           labelAltitude={0.02}
         />
       )}
+
+      {/* LIVE chip — top-left overlay. Colour and label react to actual
+          stream state so judges see at a glance that the data is moving.
+          Green = event in last 60s. Amber = stale (60s–5min). Red = stalled. */}
+      <LiveChip
+        status={streamStatus}
+        lastEventAt={lastEventAt}
+        lastHeartbeatAt={lastHeartbeatAt}
+        now={now}
+        eventCount={points.length}
+      />
 
       {/* Vignette */}
       <div
@@ -334,12 +707,96 @@ export function Globe() {
       {concentrationRing && cascade && (
         <div className="pointer-events-none absolute left-1/2 bottom-20 -translate-x-1/2">
           <div className="glass-strong inline-flex items-center gap-2 rounded-full px-3 py-1 text-[10px] uppercase tracking-widest">
-            <span className="h-1.5 w-1.5 rounded-full pulse-soft" style={{ background: "#ff4d6d", boxShadow: "0 0 8px #ff4d6d" }} />
+            <span className="h-1.5 w-1.5 rounded-full pulse-soft" style={{ background: "#f43f5e", boxShadow: "0 0 8px #f43f5e" }} />
             <span className="text-critical">geographic concentration</span>
             <span className="text-muted tabular-nums">{Math.round(concentrationRing.pct * 100)}%</span>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function formatAgo(ms: number): string {
+  if (ms < 1000) return "just now";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ago`;
+}
+
+function LiveChip({
+  status,
+  lastEventAt,
+  lastHeartbeatAt,
+  now,
+  eventCount,
+}: {
+  status: "idle" | "connecting" | "live" | "reconnecting";
+  lastEventAt: number | null;
+  lastHeartbeatAt: number | null;
+  now: number;
+  eventCount: number;
+}) {
+  let dotColor = "#94a3b8";
+  let label = "OFFLINE";
+  let detail = "";
+
+  if (status === "connecting") {
+    dotColor = "#60a5fa";
+    label = "CONNECTING";
+  } else if (status === "reconnecting") {
+    dotColor = "#fbbf24";
+    label = "RECONNECTING";
+  } else if (status === "live") {
+    const eventAge = lastEventAt ? now - lastEventAt : null;
+    const beatAge = lastHeartbeatAt ? now - lastHeartbeatAt : null;
+    // Treat the channel as healthy if either a real event or a heartbeat
+    // landed in the last 30s. After 60s with no event we degrade to amber
+    // (still connected, but the news flow is quiet). After 5min — red.
+    if (beatAge !== null && beatAge > 45_000) {
+      dotColor = "#ef4444";
+      label = "STALLED";
+    } else if (eventAge !== null && eventAge > 300_000) {
+      dotColor = "#ef4444";
+      label = "QUIET";
+    } else if (eventAge !== null && eventAge > 60_000) {
+      dotColor = "#fbbf24";
+      label = "LIVE";
+    } else {
+      dotColor = "#4ade80";
+      label = "LIVE";
+    }
+    detail = eventAge !== null ? `last event ${formatAgo(eventAge)}` : "warming up…";
+  }
+
+  return (
+    <div className="pointer-events-none absolute left-3 top-3 z-20">
+      <div
+        className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[10px] uppercase tracking-widest backdrop-blur-md"
+        style={{
+          background: "rgba(8,12,20,0.78)",
+          border: "1px solid rgba(255,255,255,0.14)",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.45)",
+          color: "#e6edf3",
+        }}
+      >
+        <span
+          className="h-2 w-2 rounded-full pulse-soft"
+          style={{ background: dotColor, boxShadow: `0 0 10px ${dotColor}` }}
+        />
+        <span style={{ color: dotColor, fontWeight: 600 }}>{label}</span>
+        {detail && (
+          <span style={{ color: "#94a3b8", textTransform: "none", letterSpacing: 0 }}>
+            · {detail}
+          </span>
+        )}
+        <span style={{ color: "#94a3b8", textTransform: "none", letterSpacing: 0 }}>
+          · {eventCount} on globe
+        </span>
+      </div>
     </div>
   );
 }
@@ -352,7 +809,7 @@ function GlobeSkeleton() {
           className="absolute inset-0 rounded-full"
           style={{
             background:
-              "radial-gradient(circle at 35% 35%, rgba(74,222,128,0.25) 0%, transparent 60%), radial-gradient(circle at 70% 70%, rgba(96,165,250,0.18) 0%, transparent 60%)",
+              "radial-gradient(circle at 35% 35%, rgba(34,211,238,0.28) 0%, transparent 60%), radial-gradient(circle at 70% 70%, rgba(168,85,247,0.20) 0%, transparent 60%)",
           }}
         />
         <div className="pulse-ring absolute inset-0 rounded-full border border-white/10" />

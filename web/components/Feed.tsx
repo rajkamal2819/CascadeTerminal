@@ -31,7 +31,14 @@ const SOURCE_LABEL: Record<string, string> = {
   finnhub_ws: "Ticks",
   alpha_vantage: "TA",
   reddit: "Social",
+  gdelt_news: "GDELT",
+  usgs_quake: "USGS",
+  noaa_alert: "NOAA",
+  opensky_jet: "Flight",
+  opensky_cluster: "Cluster",
+  ais_stall: "Ship",
   test: "Seed",
+  chart: "Chart",
 };
 
 // Sector palette — each sector gets a subtle hue so the chip rail reads at a glance.
@@ -48,6 +55,10 @@ const SECTOR_COLOR: Record<string, string> = {
   Utilities: "#facc15",
   "Real Estate": "#f87171",
   Geopolitics: "#ef4444",
+  Geophysical: "#fb7185",
+  Weather: "#38bdf8",
+  Shipping: "#22d3ee",
+  "Corporate Aviation": "#a3a3a3",
   Macro: "#94a3b8",
   Crypto: "#a855f7",
 };
@@ -101,6 +112,7 @@ export function Feed() {
   const pinForCompare = useStore((s) => s.pinForCompare);
   const compareIds = useStore((s) => s.compareIds);
   const status = useStore((s) => s.streamStatus);
+  const timeOffset = useStore((s) => s.timeOffset);
 
   const [impact, setImpact] = useState<Impact>("all");
   const [cascadableOnly, setCascadableOnly] = useState(false);
@@ -145,6 +157,14 @@ export function Feed() {
   // Client-side filters (cheap, no roundtrip)
   const filtered = useMemo(() => {
     let xs = events;
+    // Time-machine: hide events newer than (now − timeOffset days).
+    if (timeOffset > 0) {
+      const cutoff = Date.now() - timeOffset * 24 * 3600 * 1000;
+      xs = xs.filter((e) => {
+        const t = e.published_at ? new Date(e.published_at).getTime() : 0;
+        return t > 0 && t <= cutoff;
+      });
+    }
     if (impact !== "all") xs = xs.filter((e) => e.impact === impact);
     if (cascadableOnly) xs = xs.filter((e) => e.has_cascade);
     if (sort === "impact") {
@@ -152,7 +172,7 @@ export function Feed() {
       xs = [...xs].sort((a, b) => (w[b.impact] ?? 0) - (w[a.impact] ?? 0));
     }
     return xs;
-  }, [events, impact, cascadableOnly, sort]);
+  }, [events, impact, cascadableOnly, sort, timeOffset]);
 
   // Interleave day-group headers into the list (only when sorted by newest)
   type ListItem =
@@ -417,14 +437,35 @@ export function Feed() {
       </div>
 
       {emptyFiltered ? (
-        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center text-[11px] text-muted">
-          No events match these filters.
-          {activeFilters.length > 0 && (
-            <button onClick={clearAll} className="ml-1 underline hover:text-text">
-              clear
-            </button>
-          )}
-        </div>
+        events.length === 0 && activeFilters.length === 0 ? (
+          // Skeleton state — no events loaded yet
+          <div className="flex-1 space-y-0">
+            {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+              <div
+                key={i}
+                className="border-b border-white/[0.03] px-3 py-2.5"
+                style={{ opacity: 1 - i * 0.08 }}
+              >
+                <div className="flex items-center gap-2">
+                  <div className="shimmer h-1.5 w-1.5 rounded-full" />
+                  <div className="shimmer h-3 w-10 rounded" />
+                  <div className="shimmer h-2.5 w-14 rounded" />
+                  <div className="shimmer ml-auto h-2.5 w-6 rounded" />
+                </div>
+                <div className="shimmer mt-2 h-3 w-3/4 rounded" />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center px-6 text-center text-[11px] text-muted">
+            No events match these filters.
+            {activeFilters.length > 0 && (
+              <button onClick={clearAll} className="ml-1 underline hover:text-text">
+                clear
+              </button>
+            )}
+          </div>
+        )
       ) : (
         <FixedSizeList
           ref={listRef as never}

@@ -1,17 +1,28 @@
-// Zustand store for the terminal — events, selection, cascade, theme.
+// Zustand store for the terminal — events, selection, cascade, time-machine.
 
 import { create } from "zustand";
 import type { CascadeResponse, Event } from "./api";
 
 type StreamStatus = "idle" | "connecting" | "live" | "reconnecting";
 
+// Event augmented with the wall-clock time it landed in the browser. Used
+// by the globe to render a 3-second "fresh arrival" shockwave and to size
+// points by recency rather than impact alone.
+export type LiveEvent = Event & { _arrivedAt?: number };
+
 type State = {
-  events: Event[];
+  events: LiveEvent[];
   selectedEventId: string | null;
   cascade: CascadeResponse | null;
   cascadeLoading: boolean;
+  cascadePhase: "idle" | "building" | "ranking" | "synthesising" | "ready";
   streamStatus: StreamStatus;
-  theme: "dark" | "light";
+  // Wall-clock time (ms) when the last live event arrived. Drives the
+  // "LIVE · last event Ns ago" chip on the globe.
+  lastEventAt: number | null;
+  // Last server heartbeat (ms, browser wall clock). Lets us detect a stalled
+  // backend even when the stream is technically still open.
+  lastHeartbeatAt: number | null;
 
   // Click-to-drill breadcrumb: last 5 events visited via cascade node clicks.
   breadcrumb: { id: string; label: string }[];
@@ -19,8 +30,19 @@ type State = {
   // Compare mode: when set, terminal renders two cascade graphs side-by-side.
   compareIds: [string, string] | null;
 
+  // Time-machine: 0 = now, 7 = 7 days ago. Drives a UI-side time filter.
+  timeOffset: number;
+
+  // ELI5 toggle on narrative card — re-renders with novice-friendly text.
+  eli5: boolean;
+
+  // Source filter chips: when non-empty, only show events with this source_type.
+  sourceFilter: string | null;
+
   setEvents: (events: Event[]) => void;
   pushEvent: (e: Event) => void;
+  pushBackfill: (events: Event[]) => void;
+  markHeartbeat: (ts?: number) => void;
   selectEvent: (id: string | null) => void;
   drillIntoEvent: (id: string, label: string) => void;
   popBreadcrumb: () => void;
@@ -29,8 +51,11 @@ type State = {
   clearCompare: () => void;
   setCascade: (c: CascadeResponse | null) => void;
   setCascadeLoading: (b: boolean) => void;
+  setCascadePhase: (p: State["cascadePhase"]) => void;
   setStreamStatus: (s: StreamStatus) => void;
-  toggleTheme: () => void;
+  setTimeOffset: (n: number) => void;
+  toggleEli5: () => void;
+  setSourceFilter: (s: string | null) => void;
 };
 
 const MAX_EVENTS = 500;
@@ -40,19 +65,56 @@ export const useStore = create<State>((set) => ({
   selectedEventId: null,
   cascade: null,
   cascadeLoading: false,
+  cascadePhase: "idle",
   streamStatus: "idle",
-  theme: "dark",
   breadcrumb: [],
   compareIds: null,
+  timeOffset: 0,
+  eli5: false,
+  sourceFilter: null,
+  lastEventAt: null,
+  lastHeartbeatAt: null,
 
   setEvents: (events) => set({ events }),
 
   pushEvent: (e) =>
     set((s) => {
-      // Deduplicate by id, keep newest first, cap.
       const without = s.events.filter((x) => x.id !== e.id);
-      return { events: [e, ...without].slice(0, MAX_EVENTS) };
+      const stamped: LiveEvent = { ...e, _arrivedAt: Date.now() };
+      return {
+        events: [stamped, ...without].slice(0, MAX_EVENTS),
+        lastEventAt: Date.now(),
+        lastHeartbeatAt: Date.now(),
+      };
     }),
+
+  pushBackfill: (events) =>
+    set((s) => {
+      // On a cold connect the change-stream may stay quiet for minutes,
+      // so we stagger arrival timestamps on the first few backfill events.
+      // The globe then plays a ripple-in shockwave for ~700ms instead of
+      // sitting dead. Only the top-5 most-recent get stamped; the rest
+      // land silently so we don't carpet-bomb the globe with halos.
+      const known = new Set(s.events.map((e) => e.id));
+      const fresh = events.filter((e) => !known.has(e.id));
+      const t0 = Date.now();
+      const stamped: LiveEvent[] = fresh.map((e, i) =>
+        i < 5 ? { ...e, _arrivedAt: t0 + i * 120 } : e,
+      );
+      const merged: LiveEvent[] = [...s.events, ...stamped].slice(0, MAX_EVENTS);
+      merged.sort((a, b) => {
+        const ta = a.published_at ? Date.parse(a.published_at) : 0;
+        const tb = b.published_at ? Date.parse(b.published_at) : 0;
+        return tb - ta;
+      });
+      return {
+        events: merged,
+        lastEventAt: stamped.length ? t0 : s.lastEventAt,
+        lastHeartbeatAt: t0,
+      };
+    }),
+
+  markHeartbeat: (ts) => set({ lastHeartbeatAt: ts ?? Date.now() }),
 
   selectEvent: (id) =>
     set((s) => (id === null ? { selectedEventId: null, breadcrumb: [] } : { selectedEventId: id })),
@@ -61,7 +123,6 @@ export const useStore = create<State>((set) => ({
     set((s) => {
       if (!id || id === s.selectedEventId) return s;
       const trail = [...s.breadcrumb];
-      // If current selection isn't already on the trail, push it.
       if (s.selectedEventId && !trail.some((b) => b.id === s.selectedEventId)) {
         const cur = s.events.find((e) => e.id === s.selectedEventId);
         trail.push({ id: s.selectedEventId, label: cur?.tickers?.[0] ?? "ROOT" });
@@ -83,15 +144,12 @@ export const useStore = create<State>((set) => ({
     set((s) => {
       if (!id) return s;
       if (!s.compareIds) {
-        // First pin → wait for second
         return { compareIds: [id, ""] as [string, string] };
       }
       if (s.compareIds[1] === "") {
-        // Second pin → enter compare mode
         if (s.compareIds[0] === id) return s;
         return { compareIds: [s.compareIds[0], id] };
       }
-      // Already comparing → replace second slot
       return { compareIds: [s.compareIds[0], id] };
     }),
 
@@ -99,17 +157,9 @@ export const useStore = create<State>((set) => ({
 
   setCascade: (cascade) => set({ cascade }),
   setCascadeLoading: (b) => set({ cascadeLoading: b }),
+  setCascadePhase: (cascadePhase) => set({ cascadePhase }),
   setStreamStatus: (streamStatus) => set({ streamStatus }),
-
-  toggleTheme: () =>
-    set((s) => {
-      const next = s.theme === "dark" ? "light" : "dark";
-      if (typeof document !== "undefined") {
-        document.documentElement.setAttribute("data-theme", next);
-        try {
-          localStorage.setItem("cascade-theme", next);
-        } catch {}
-      }
-      return { theme: next };
-    }),
+  setTimeOffset: (timeOffset) => set({ timeOffset }),
+  toggleEli5: () => set((s) => ({ eli5: !s.eli5 })),
+  setSourceFilter: (sourceFilter) => set({ sourceFilter }),
 }));

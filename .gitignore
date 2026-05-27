@@ -5,6 +5,8 @@ SETUP.md
 DEPLOY.md
 PLAN.md
 TODO_LATER.md
+FEATURES.md
+SOURCES.md
 
 # Secrets & local state
 .env

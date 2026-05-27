@@ -28,6 +28,7 @@ class EventOut(BaseModel):
     published_at: datetime | None = None
     ingested_at: datetime | None = None
     has_cascade: bool = False
+    replay: str = ""
 
 
 class EventList(BaseModel):
@@ -64,6 +65,7 @@ class CascadeRequest(BaseModel):
     event_id: str = Field(min_length=10, max_length=64)
     max_hops: int = Field(default=3, ge=1, le=3)
     top_k: int = Field(default=15, ge=1, le=50)
+    device_id: str = Field(default="", max_length=64)
 
 
 class CascadeNode(BaseModel):

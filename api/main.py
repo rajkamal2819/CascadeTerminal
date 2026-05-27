@@ -41,6 +41,7 @@ from api.models import (
     StatsResponse,
     WatchlistItem,
 )
+from api.multimodal import router as multimodal_router
 from api.search import router as search_router
 from api.sse import set_cascadable_tickers, sse_event_generator, start_watcher, stop_watcher
 
@@ -124,6 +125,7 @@ app.add_middleware(
 
 app.include_router(search_router, tags=["search"])
 app.include_router(cascade_router, tags=["cascade"])
+app.include_router(multimodal_router)
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +226,7 @@ def _serialize_event(
         published_at=doc.get("published_at"),
         ingested_at=doc.get("ingested_at"),
         has_cascade=has_cascade,
+        replay=(doc.get("replay") or ""),
     )
 
 

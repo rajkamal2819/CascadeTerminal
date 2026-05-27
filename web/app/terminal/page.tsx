@@ -11,7 +11,9 @@ import { Feed } from "@/components/Feed";
 import { Globe } from "@/components/Globe";
 import { ResizableRail } from "@/components/ResizableRail";
 import { SearchBar } from "@/components/SearchBar";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { LiveStatusPill } from "@/components/LiveStatusPill";
+import { TimeMachine } from "@/components/TimeMachine";
+import { WatchMode } from "@/components/WatchMode";
 import { api, type StatsResponse } from "@/lib/api";
 import { useLiveEvents } from "@/lib/sse";
 import { useStore } from "@/lib/store";
@@ -29,6 +31,11 @@ export default function TerminalPage() {
   useLiveEvents();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("globe");
+  const [isWatchMode, setIsWatchMode] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setIsWatchMode(new URLSearchParams(window.location.search).get("watch") === "1");
+  }, []);
   const events = useStore((s) => s.events);
   const selectEvent = useStore((s) => s.selectEvent);
   const selectedId = useStore((s) => s.selectedEventId);
@@ -71,6 +78,32 @@ export default function TerminalPage() {
     if (cascade && cascade.nodes.length > 0) setViewMode("graph");
   }, [cascade]);
 
+  // ?replay=<slug> → fetch the seeded scenario event and auto-select it.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const slug = new URLSearchParams(window.location.search).get("replay");
+    if (!slug) return;
+    let alive = true;
+    (async () => {
+      try {
+        // Pull recent events and match on `replay` field client-side.
+        // (Avoids needing a new dedicated API endpoint for one demo hook.)
+        const r = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080"}/events?hours_back=72&limit=200`,
+          { cache: "no-store" },
+        );
+        const data = await r.json();
+        const match = (data.events ?? []).find(
+          (e: { id: string; headline?: string }) =>
+            (e as { replay?: string }).replay === slug ||
+            (e.headline ?? "").toLowerCase().includes(slug.replace(/-/g, " ")),
+        );
+        if (alive && match?.id) selectEvent(match.id);
+      } catch {}
+    })();
+    return () => { alive = false; };
+  }, [selectEvent]);
+
   // ⌘K / "/" → focus search · Esc → exit compare mode
   const clearCompare = useStore((s) => s.clearCompare);
   useEffect(() => {
@@ -92,6 +125,10 @@ export default function TerminalPage() {
   }, [clearCompare]);
 
   const showHero = events.length === 0;
+
+  if (isWatchMode) {
+    return <WatchMode />;
+  }
 
   return (
     <main className="terminal-bg relative h-screen overflow-hidden text-text">
@@ -125,7 +162,8 @@ export default function TerminalPage() {
           ) : (
             <motion.div
               key="graph"
-              className="absolute inset-0 flex items-center justify-center"
+              className="absolute flex items-center justify-center"
+              style={{ left: leftW + 16, right: rightW + 16, top: 72, bottom: 48 }}
               initial={{ opacity: 0, scale: 0.94 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 1.04 }}
@@ -137,9 +175,10 @@ export default function TerminalPage() {
         </AnimatePresence>
       </div>
 
-      {/* ── Top bar ── */}
-      <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-4 px-4 py-3">
-        <div className="pointer-events-auto flex items-center gap-3">
+      {/* ── Top bar ── 3-column grid so SearchBar is geometrically centred
+              regardless of how wide the side cells get. */}
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-20 grid grid-cols-[1fr_minmax(360px,560px)_1fr] items-center gap-4 px-4 py-3">
+        <div className="pointer-events-auto flex items-center gap-3 justify-self-start">
           <Link
             href="/"
             className="glass mono inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[11px] font-semibold tracking-[0.25em] text-text"
@@ -147,16 +186,14 @@ export default function TerminalPage() {
             <span className="h-1.5 w-1.5 rounded-full bg-accent pulse-soft" style={{ boxShadow: "0 0 10px var(--accent-glow)" }} />
             CASCADE
           </Link>
-          <span className="hidden text-[10px] uppercase tracking-[0.2em] text-muted sm:inline">
-            news · geopolitics · markets
-          </span>
+          <LiveStatusPill stats={stats} />
         </div>
 
-        <div className="pointer-events-auto flex flex-1 justify-center">
+        <div className="pointer-events-auto justify-self-center w-full max-w-[560px]">
           <SearchBar onResults={(hits) => { if (hits[0]) selectEvent(hits[0].id); }} />
         </div>
 
-        <div className="pointer-events-auto flex items-center gap-2">
+        <div className="pointer-events-auto flex items-center gap-2 justify-self-end">
           {/* View-mode toggle */}
           <div className="glass flex items-center gap-0.5 rounded-full p-0.5">
             <button
@@ -182,7 +219,6 @@ export default function TerminalPage() {
               <span className="hidden sm:inline">Graph</span>
             </button>
           </div>
-          <ThemeToggle />
         </div>
       </header>
 
@@ -191,7 +227,7 @@ export default function TerminalPage() {
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.35, delay: 0.05 }}
-        className="pointer-events-auto absolute bottom-12 left-3 top-16 z-10 hidden md:block"
+        className="pointer-events-auto absolute bottom-12 left-3 top-[72px] z-10 hidden md:block"
       >
         <ResizableRail side="left" defaultWidth={340} className="h-full">
           <Feed />
@@ -203,7 +239,7 @@ export default function TerminalPage() {
         initial={{ opacity: 0, x: 20 }}
         animate={{ opacity: 1, x: 0 }}
         transition={{ duration: 0.35, delay: 0.1 }}
-        className="pointer-events-auto absolute bottom-12 right-3 top-16 z-10 hidden md:block"
+        className="pointer-events-auto absolute bottom-12 right-3 top-[72px] z-10 hidden md:block"
       >
         <ResizableRail side="right" defaultWidth={360} className="h-full">
           <Cascade />
@@ -213,7 +249,7 @@ export default function TerminalPage() {
       {/* ── Centred middle column (lives between the rails so the hero
               and nudge are visually centred in the visible canvas) ── */}
       <div
-        className="pointer-events-none absolute top-16 bottom-12 z-10 hidden md:flex flex-col items-center justify-center"
+        className="pointer-events-none absolute top-[72px] bottom-12 z-10 hidden md:flex flex-col items-center justify-center"
         style={{ left: leftW + 16, right: rightW + 16 }}
       >
         <AnimatePresence>
@@ -226,8 +262,8 @@ export default function TerminalPage() {
               className="w-full max-w-sm text-center"
             >
               <div className="glass pointer-events-auto rounded-2xl px-6 py-5">
-                <div className="mono text-[10px] uppercase tracking-[0.4em] text-muted">cascade terminal</div>
-                <div className="mt-1 text-[14px] text-text">Real-time news, geopolitics &amp; market cascade intelligence</div>
+                <div className="mono text-[10px] uppercase tracking-[0.4em] text-muted">planetary nervous system</div>
+                <div className="mt-1 text-[14px] text-text">Watch news, ships, quakes &amp; filings cascade in real time</div>
                 <div className="mt-1 text-[11px] text-muted">$graphLookup · voyage rerank-2.5 · gemini</div>
                 <div className="mt-4 mono text-[9px] uppercase tracking-widest text-muted/70">try a query</div>
                 <div className="mt-1.5 flex flex-wrap justify-center gap-1.5">
@@ -272,12 +308,12 @@ export default function TerminalPage() {
             <Stat label="critical" value={stats?.impact_counts?.critical ?? 0} color="var(--critical)" />
             <Stat label="high" value={stats?.impact_counts?.high ?? 0} color="var(--high)" />
           </div>
-          <div className="hidden text-muted sm:block">mongo atlas · voyage · gemini</div>
+          <TimeMachine />
         </div>
       </footer>
 
       {/* ── Mobile: stack ── */}
-      <div className="absolute inset-x-2 bottom-12 top-16 z-10 md:hidden">
+      <div className="absolute inset-x-2 bottom-12 top-[72px] z-10 md:hidden">
         <div className="grid h-full grid-rows-2 gap-2">
           <div className="min-h-0"><Feed /></div>
           <div className="min-h-0"><Cascade /></div>
