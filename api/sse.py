@@ -251,6 +251,31 @@ async def stop_watcher() -> None:
     _geo_watcher_task = None
 
 
+async def _backfill_recent(limit: int = 50) -> list[dict[str, Any]]:
+    """Pull the most recent high/critical events so the globe is never empty
+    on first connect — judges should see life immediately, not wait for the
+    next inbound change-stream event."""
+    if _db_ref is None:
+        return []
+    try:
+        cursor = (
+            _db_ref.events.find(
+                {"impact": {"$in": ["critical", "high", "medium"]}},
+                {
+                    "_id": 1, "headline": 1, "text": 1, "tickers": 1, "sector": 1,
+                    "impact": 1, "source_type": 1, "published_at": 1,
+                },
+            )
+            .sort("published_at", -1)
+            .limit(limit)
+        )
+        docs = await cursor.to_list(length=limit)
+        return [_serialize_event(d) for d in docs]
+    except Exception as e:
+        log.warning("backfill query failed (%s)", e)
+        return []
+
+
 async def sse_event_generator(request: Request) -> AsyncIterator[dict[str, Any]]:
     """
     Per-client async generator. Yields sse-starlette events for every
@@ -264,6 +289,12 @@ async def sse_event_generator(request: Request) -> AsyncIterator[dict[str, Any]]
     # Send an initial ready event so the client knows the channel is live.
     yield {"event": "ready", "data": json.dumps({"ok": True})}
 
+    # Backfill: flush the most-recent events as one payload so the globe
+    # has signal before the next change-stream tick.
+    backfill = await _backfill_recent(limit=50)
+    if backfill:
+        yield {"event": "backfill", "data": json.dumps({"events": backfill})}
+
     try:
         while True:
             if await request.is_disconnected():
@@ -272,8 +303,12 @@ async def sse_event_generator(request: Request) -> AsyncIterator[dict[str, Any]]
                 payload = await asyncio.wait_for(queue.get(), timeout=15.0)
                 yield {"event": "event", "data": json.dumps(payload)}
             except asyncio.TimeoutError:
-                # Heartbeat keeps Cloud Run / proxies from idling us out.
-                yield {"event": "ping", "data": ""}
+                # Heartbeat with server time so the client can show
+                # "last event Xs ago" grounded in server clock, not browser idle.
+                yield {
+                    "event": "heartbeat",
+                    "data": json.dumps({"ts": datetime.now(timezone.utc).isoformat()}),
+                }
     finally:
         async with _subscribers_lock:
             _subscribers.discard(queue)

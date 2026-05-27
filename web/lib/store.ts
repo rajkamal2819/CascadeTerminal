@@ -5,13 +5,24 @@ import type { CascadeResponse, Event } from "./api";
 
 type StreamStatus = "idle" | "connecting" | "live" | "reconnecting";
 
+// Event augmented with the wall-clock time it landed in the browser. Used
+// by the globe to render a 3-second "fresh arrival" shockwave and to size
+// points by recency rather than impact alone.
+export type LiveEvent = Event & { _arrivedAt?: number };
+
 type State = {
-  events: Event[];
+  events: LiveEvent[];
   selectedEventId: string | null;
   cascade: CascadeResponse | null;
   cascadeLoading: boolean;
   cascadePhase: "idle" | "building" | "ranking" | "synthesising" | "ready";
   streamStatus: StreamStatus;
+  // Wall-clock time (ms) when the last live event arrived. Drives the
+  // "LIVE · last event Ns ago" chip on the globe.
+  lastEventAt: number | null;
+  // Last server heartbeat (ms, browser wall clock). Lets us detect a stalled
+  // backend even when the stream is technically still open.
+  lastHeartbeatAt: number | null;
 
   // Click-to-drill breadcrumb: last 5 events visited via cascade node clicks.
   breadcrumb: { id: string; label: string }[];
@@ -30,6 +41,8 @@ type State = {
 
   setEvents: (events: Event[]) => void;
   pushEvent: (e: Event) => void;
+  pushBackfill: (events: Event[]) => void;
+  markHeartbeat: (ts?: number) => void;
   selectEvent: (id: string | null) => void;
   drillIntoEvent: (id: string, label: string) => void;
   popBreadcrumb: () => void;
@@ -59,14 +72,49 @@ export const useStore = create<State>((set) => ({
   timeOffset: 0,
   eli5: false,
   sourceFilter: null,
+  lastEventAt: null,
+  lastHeartbeatAt: null,
 
   setEvents: (events) => set({ events }),
 
   pushEvent: (e) =>
     set((s) => {
       const without = s.events.filter((x) => x.id !== e.id);
-      return { events: [e, ...without].slice(0, MAX_EVENTS) };
+      const stamped: LiveEvent = { ...e, _arrivedAt: Date.now() };
+      return {
+        events: [stamped, ...without].slice(0, MAX_EVENTS),
+        lastEventAt: Date.now(),
+        lastHeartbeatAt: Date.now(),
+      };
     }),
+
+  pushBackfill: (events) =>
+    set((s) => {
+      // On a cold connect the change-stream may stay quiet for minutes,
+      // so we stagger arrival timestamps on the first few backfill events.
+      // The globe then plays a ripple-in shockwave for ~700ms instead of
+      // sitting dead. Only the top-5 most-recent get stamped; the rest
+      // land silently so we don't carpet-bomb the globe with halos.
+      const known = new Set(s.events.map((e) => e.id));
+      const fresh = events.filter((e) => !known.has(e.id));
+      const t0 = Date.now();
+      const stamped: LiveEvent[] = fresh.map((e, i) =>
+        i < 5 ? { ...e, _arrivedAt: t0 + i * 120 } : e,
+      );
+      const merged: LiveEvent[] = [...s.events, ...stamped].slice(0, MAX_EVENTS);
+      merged.sort((a, b) => {
+        const ta = a.published_at ? Date.parse(a.published_at) : 0;
+        const tb = b.published_at ? Date.parse(b.published_at) : 0;
+        return tb - ta;
+      });
+      return {
+        events: merged,
+        lastEventAt: stamped.length ? t0 : s.lastEventAt,
+        lastHeartbeatAt: t0,
+      };
+    }),
+
+  markHeartbeat: (ts) => set({ lastHeartbeatAt: ts ?? Date.now() }),
 
   selectEvent: (id) =>
     set((s) => (id === null ? { selectedEventId: null, breadcrumb: [] } : { selectedEventId: id })),
