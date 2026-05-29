@@ -138,6 +138,14 @@ export const api = {
   buildCascade: (body: { event_id: string; max_hops?: number; top_k?: number; device_id?: string }) =>
     http<CascadeResponse>("/cascade", { method: "POST", body: JSON.stringify(body) }),
 
+  refreshAll: () =>
+    http<{
+      ran: number;
+      succeeded: number;
+      failed: number;
+      workers: { worker: string; ok: boolean; error?: string }[];
+    }>("/admin/refresh", { method: "POST" }),
+
   logCascadeView: (body: { device_id: string; event_id: string; root_ticker?: string; sector?: string; headline?: string }) =>
     http<{ ok: boolean }>("/memory/cascade-view", { method: "POST", body: JSON.stringify(body) }),
 

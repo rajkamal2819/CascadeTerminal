@@ -72,11 +72,20 @@ def _centroid(geometry: dict | None) -> tuple[float, float] | None:
 async def work() -> None:
     payload = await _fetch()
     drafts: list[EventDraft] = []
+    # Per-poll guards so weather doesn't flood the events collection and crowd
+    # out tech/industrial signal. We keep only Severe+ alerts, dedupe by
+    # (event_name, area) within a poll, and cap total per poll.
+    MAX_PER_POLL = 15
+    seen: set[tuple[str, str]] = set()
     for feat in payload.get("features", []):
+        if len(drafts) >= MAX_PER_POLL:
+            break
         props = feat.get("properties") or {}
         severity = props.get("severity") or "Moderate"
         impact = _SEVERITY_IMPACT.get(severity, "medium")
-        if impact == "low":
+        # Tighten threshold: drop low + medium. Severe Thunderstorm Warnings
+        # are "Severe" → "high" and still pass; everyday advisories don't.
+        if impact in ("low", "medium"):
             continue
         ext_id = props.get("id") or feat.get("id") or props.get("@id")
         if not ext_id:
@@ -84,6 +93,11 @@ async def work() -> None:
         event_name = props.get("event") or "Weather alert"
         headline = props.get("headline") or event_name
         area = props.get("areaDesc") or ""
+        # Dedupe identical alert types in the same area within this poll.
+        key = (event_name, area[:40])
+        if key in seen:
+            continue
+        seen.add(key)
         sent = props.get("sent")
         try:
             published_at = datetime.fromisoformat(sent.replace("Z", "+00:00")) if sent else datetime.now(timezone.utc)

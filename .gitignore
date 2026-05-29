@@ -7,6 +7,10 @@ PLAN.md
 TODO_LATER.md
 FEATURES.md
 SOURCES.md
+DEPLOYMENT_NOTES.md
+ARCHITECTURE.md
+WORKERS_DEPLOY_PLAN.md
+cloudbuild.workers.yaml
 
 # Secrets & local state
 .env

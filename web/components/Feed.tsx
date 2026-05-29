@@ -71,6 +71,18 @@ type Sort = "newest" | "impact";
 // in categories + impact.
 const DEFAULT_HOURS = 720;
 
+// Per-sector cap applied client-side when no explicit sector filter is set,
+// so noisy ingestors (NOAA weather, GDELT geopolitics) don't crowd out the
+// market-relevant feed. When a user clicks a sector chip the cap drops away
+// so they see everything in that sector.
+const NOISY_SECTOR_CAP: Record<string, number> = {
+  Weather: 12,
+  Geopolitics: 15,
+  Geophysical: 12,
+  "Corporate Aviation": 8,
+  Shipping: 8,
+};
+
 function relativeTime(iso: string | null | undefined): string {
   if (!iso) return "";
   const t = new Date(iso).getTime();
@@ -167,12 +179,37 @@ export function Feed() {
     }
     if (impact !== "all") xs = xs.filter((e) => e.impact === impact);
     if (cascadableOnly) xs = xs.filter((e) => e.has_cascade);
+
+    // Sector rebalance — cap noisy ingestors when no sector filter is set,
+    // keeping only the most-recent N per sector so market signal isn't
+    // buried under hundreds of NOAA alerts or GDELT geopolitics scrapes.
+    if (!sectorFilter) {
+      const sortedByRecency = [...xs].sort((a, b) => {
+        const ta = a.published_at ? new Date(a.published_at).getTime() : 0;
+        const tb = b.published_at ? new Date(b.published_at).getTime() : 0;
+        return tb - ta;
+      });
+      const counts = new Map<string, number>();
+      const kept = new Set<string>();
+      for (const e of sortedByRecency) {
+        const sec = e.sector || "";
+        const cap = NOISY_SECTOR_CAP[sec];
+        if (cap !== undefined) {
+          const c = counts.get(sec) ?? 0;
+          if (c >= cap) continue;
+          counts.set(sec, c + 1);
+        }
+        kept.add(e.id);
+      }
+      xs = xs.filter((e) => kept.has(e.id));
+    }
+
     if (sort === "impact") {
       const w: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
       xs = [...xs].sort((a, b) => (w[b.impact] ?? 0) - (w[a.impact] ?? 0));
     }
     return xs;
-  }, [events, impact, cascadableOnly, sort, timeOffset]);
+  }, [events, impact, cascadableOnly, sort, timeOffset, sectorFilter]);
 
   // Interleave day-group headers into the list (only when sorted by newest)
   type ListItem =
@@ -196,7 +233,9 @@ export function Feed() {
     return out;
   }, [filtered, sort]);
 
-  // Sector chip counts derived from currently-loaded events.
+  // Sector chip counts — reflect the *displayed* count (after the noisy-sector
+  // cap), not raw ingest. Otherwise the badge says "138" while the feed shows
+  // 12 rows and the user thinks the filter is broken.
   const sectorCounts = useMemo(() => {
     const map = new Map<string, number>();
     for (const e of events) {
@@ -205,6 +244,11 @@ export function Feed() {
     }
     return [...map.entries()]
       .filter(([s]) => s !== "Uncategorized" || sectorFilter === "Uncategorized")
+      .map(([s, raw]) => {
+        const cap = NOISY_SECTOR_CAP[s];
+        const shown = cap !== undefined ? Math.min(cap, raw) : raw;
+        return [s, shown] as [string, number];
+      })
       .sort((a, b) => b[1] - a[1]);
   }, [events, sectorFilter]);
 

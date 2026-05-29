@@ -25,8 +25,16 @@ NAME = "gdelt"
 ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc"
 DEFAULT_INTERVAL_S = 900.0  # 15 min
 
-# Query targets cascadable geopolitics + macro events.
-QUERY = '(supply chain OR semiconductor OR earnings OR sanctions OR shipping OR oil OR Taiwan OR geopolitics OR tariff) sourcelang:eng'
+# Query targets cascadable, market-moving geopolitics + macro events. We
+# bias toward terms that imply equity impact (sanctions, export ban,
+# tariff, chip ban, refinery, port strike) so the feed doesn't fill with
+# generic "geopolitics" coverage.
+QUERY = (
+    '("export ban" OR "chip ban" OR sanctions OR tariff OR "port strike" '
+    'OR "supply chain" OR semiconductor OR "earnings miss" OR refinery '
+    'OR "oil spike" OR Taiwan OR Houthi OR OPEC) sourcelang:eng'
+)
+MAX_PER_POLL = 12
 
 
 def _impact_from_tone(tone: float | None) -> str:
@@ -74,18 +82,29 @@ def _parse_gdelt_date(s: str | None) -> datetime:
 async def work() -> None:
     payload = await _fetch()
     drafts: list[EventDraft] = []
+    seen_titles: set[str] = set()
     for art in payload.get("articles", []):
+        if len(drafts) >= MAX_PER_POLL:
+            break
         url = art.get("url") or ""
         if not url:
             continue
         title = (art.get("title") or "").strip()
         if not title:
             continue
+        # Dedupe near-identical headlines within a poll (wire syndication).
+        title_key = title.lower()[:80]
+        if title_key in seen_titles:
+            continue
+        seen_titles.add(title_key)
         tone = art.get("tone")
         try:
             tone_val = float(tone) if tone is not None else None
         except (TypeError, ValueError):
             tone_val = None
+        # Drop low-impact (weak tone) — they're rarely market-moving.
+        if _impact_from_tone(tone_val) == "low":
+            continue
 
         # Best-effort country / theme hints in extra
         country = art.get("sourcecountry") or ""

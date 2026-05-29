@@ -324,17 +324,30 @@ async def build_cascade(
     root_text = root_doc.get("text") or headline
 
     if not root_tickers:
+        # No tickers on the root (geopolitics / GDELT / NOAA / USGS events).
+        # The supply-chain $graphLookup can't seed, but a semantic-similarity
+        # fallback still produces a useful cascade: top-K events most related
+        # to this one by Voyage embedding similarity, each rendered as a
+        # pseudo-node tagged `relationship_type: "semantic"`.
+        fallback_nodes = await _related_events_fallback(db, root_doc, top_k=top_k)
         return {
             "root": {
                 "id": event_id,
                 "headline": headline,
                 "tickers": [],
                 "impact": root_doc.get("impact", ""),
+                "sector": root_doc.get("sector", "") or "",
                 "published_at": str(root_doc.get("published_at", "")),
+                "source_type": root_doc.get("source_type", ""),
             },
-            "nodes": [],
+            "nodes": fallback_nodes,
             "edges": [],
-            "message": "No tickers found on root event — cannot walk supply-chain graph",
+            "hop_counts": {},
+            "fallback": "semantic_no_tickers",
+            "message": (
+                "No tickers on root event — showing semantically related events "
+                "via Atlas $vectorSearch instead of $graphLookup."
+            ),
         }
 
     # $graphLookup: walk supply-chain edges from root tickers.

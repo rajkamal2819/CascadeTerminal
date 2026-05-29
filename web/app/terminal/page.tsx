@@ -3,12 +3,20 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { Globe2, Network } from "lucide-react";
+import { Globe2, Network, Boxes } from "lucide-react";
+import { AgentTrace } from "@/components/AgentTrace";
+import { BootSequence } from "@/components/BootSequence";
 import { Cascade } from "@/components/Cascade";
 import { CascadeGraph } from "@/components/CascadeGraph";
+import { CascadeGraph3D } from "@/components/CascadeGraph3D";
 import { CompareView } from "@/components/CompareView";
+import { CounterfactualOverlay, CounterfactualToggle } from "@/components/CounterfactualOverlay";
+import { DemoTour } from "@/components/DemoTour";
+import { NodeReasoning } from "@/components/NodeReasoning";
 import { Feed } from "@/components/Feed";
 import { Globe } from "@/components/Globe";
+import { ReplayMenu } from "@/components/ReplayMenu";
+import { RefreshButton } from "@/components/RefreshButton";
 import { ResizableRail } from "@/components/ResizableRail";
 import { SearchBar } from "@/components/SearchBar";
 import { LiveStatusPill } from "@/components/LiveStatusPill";
@@ -18,7 +26,7 @@ import { api, type StatsResponse } from "@/lib/api";
 import { useLiveEvents } from "@/lib/sse";
 import { useStore } from "@/lib/store";
 
-type ViewMode = "globe" | "graph";
+type ViewMode = "globe" | "graph" | "graph3d";
 
 const EXAMPLE_QUERIES = [
   { label: "Taiwan Strait tensions", query: "Taiwan Strait geopolitical risk semiconductor supply" },
@@ -78,16 +86,23 @@ export default function TerminalPage() {
     if (cascade && cascade.nodes.length > 0) setViewMode("graph");
   }, [cascade]);
 
+  // DemoTour drives view-mode via this custom event.
+  useEffect(() => {
+    const onView = (e: Event) => {
+      const v = (e as CustomEvent<ViewMode>).detail;
+      if (v === "globe" || v === "graph" || v === "graph3d") setViewMode(v);
+    };
+    window.addEventListener("cascade:view", onView);
+    return () => window.removeEventListener("cascade:view", onView);
+  }, []);
+
   // ?replay=<slug> → fetch the seeded scenario event and auto-select it.
+  // Same handler is also fired by the ReplayMenu via the `cascade:replay`
+  // CustomEvent so judges can pick a scenario without reloading.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const slug = new URLSearchParams(window.location.search).get("replay");
-    if (!slug) return;
-    let alive = true;
-    (async () => {
+    const runReplay = async (slug: string) => {
       try {
-        // Pull recent events and match on `replay` field client-side.
-        // (Avoids needing a new dedicated API endpoint for one demo hook.)
         const r = await fetch(
           `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080"}/events?hours_back=72&limit=200`,
           { cache: "no-store" },
@@ -98,10 +113,19 @@ export default function TerminalPage() {
             (e as { replay?: string }).replay === slug ||
             (e.headline ?? "").toLowerCase().includes(slug.replace(/-/g, " ")),
         );
-        if (alive && match?.id) selectEvent(match.id);
+        if (match?.id) selectEvent(match.id);
       } catch {}
-    })();
-    return () => { alive = false; };
+    };
+
+    const slug = new URLSearchParams(window.location.search).get("replay");
+    if (slug) runReplay(slug);
+
+    const onReplay = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      if (detail) runReplay(detail);
+    };
+    window.addEventListener("cascade:replay", onReplay);
+    return () => window.removeEventListener("cascade:replay", onReplay);
   }, [selectEvent]);
 
   // ⌘K / "/" → focus search · Esc → exit compare mode
@@ -114,9 +138,10 @@ export default function TerminalPage() {
         ev.preventDefault();
         (document.getElementById("cascade-search") as HTMLInputElement | null)?.focus();
       }
-      // G = globe, C = graph
+      // G = globe, C = graph, V = graph3d (volume)
       if (!inField && ev.key.toLowerCase() === "g") setViewMode("globe");
       if (!inField && ev.key.toLowerCase() === "c") setViewMode("graph");
+      if (!inField && ev.key.toLowerCase() === "v") setViewMode("graph3d");
       // Esc → exit compare mode
       if (!inField && ev.key === "Escape") clearCompare();
     };
@@ -159,6 +184,18 @@ export default function TerminalPage() {
             >
               <Globe />
             </motion.div>
+          ) : viewMode === "graph3d" ? (
+            <motion.div
+              key="graph3d"
+              className="absolute"
+              style={{ left: leftW + 16, right: rightW + 16, top: 72, bottom: 48 }}
+              initial={{ opacity: 0, scale: 0.94 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 1.04 }}
+              transition={{ duration: 0.45, ease: "easeInOut" }}
+            >
+              <CascadeGraph3D />
+            </motion.div>
           ) : (
             <motion.div
               key="graph"
@@ -194,6 +231,9 @@ export default function TerminalPage() {
         </div>
 
         <div className="pointer-events-auto flex items-center gap-2 justify-self-end">
+          <RefreshButton />
+          <CounterfactualToggle />
+          <ReplayMenu />
           {/* View-mode toggle */}
           <div className="glass flex items-center gap-0.5 rounded-full p-0.5">
             <button
@@ -217,6 +257,17 @@ export default function TerminalPage() {
             >
               <Network size={12} />
               <span className="hidden sm:inline">Graph</span>
+            </button>
+            <button
+              onClick={() => setViewMode("graph3d")}
+              title="3D cascade · hop reveal (V)"
+              className={
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] uppercase tracking-wider transition " +
+                (viewMode === "graph3d" ? "bg-accent/20 text-accent" : "text-muted hover:text-text")
+              }
+            >
+              <Boxes size={12} />
+              <span className="hidden sm:inline">3D</span>
             </button>
           </div>
         </div>
@@ -311,6 +362,13 @@ export default function TerminalPage() {
           <TimeMachine />
         </div>
       </footer>
+
+      {/* ── Eye-candy overlays ── */}
+      <BootSequence />
+      <AgentTrace />
+      <CounterfactualOverlay />
+      <DemoTour />
+      <NodeReasoning />
 
       {/* ── Mobile: stack ── */}
       <div className="absolute inset-x-2 bottom-12 top-[72px] z-10 md:hidden">

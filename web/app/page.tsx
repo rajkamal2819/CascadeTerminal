@@ -132,7 +132,7 @@ export default function LandingPage() {
             <ArrowRight size={16} />
           </Link>
           <Link
-            href="/terminal?watch=1"
+            href="/terminal?demo=1"
             className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.03] px-6 py-3 text-sm text-text backdrop-blur-md transition hover:bg-white/[0.08]"
           >
             <Play size={14} />

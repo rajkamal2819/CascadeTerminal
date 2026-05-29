@@ -406,6 +406,29 @@ export function CascadeGraph({ cascade: cascadeProp, compact = false, sharedTick
   const loading = useStore((s) => s.cascadeLoading);
   const selectedId = useStore((s) => s.selectedEventId);
   const drillIntoEvent = useStore((s) => s.drillIntoEvent);
+  const setReasoningNode = useStore((s) => s.setReasoningNode);
+
+  // Click handler: open the reasoning popover for the clicked node. The
+  // popover itself offers a "drill into this event" button, so we no longer
+  // jump straight to drill on click — judges get the WHY first.
+  const openReasoning = (n: PlacedNode) => {
+    if (n.isRoot) return; // root has no parent edge to explain
+    // Look up the matching CascadeNode for `why` and `cascade_score`.
+    const orig = cascade?.nodes?.find((cn) => cn.ticker === n.ticker);
+    setReasoningNode({
+      ticker: n.ticker,
+      company: n.company,
+      sector: undefined,
+      hop: n.hop,
+      relationship_type: n.relType,
+      cascade_score: orig?.cascade_score ?? n.score,
+      why: orig?.why ?? "",
+      event_id: n.eventId,
+      polarity: n.polarity === "related" ? "semantic"
+              : n.polarity === "root"    ? "damage"
+              : (n.polarity as "damage" | "exposed" | "benefit"),
+    });
+  };
   const breadcrumb = useStore((s) => s.breadcrumb);
   const popBreadcrumb = useStore((s) => s.popBreadcrumb);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -787,9 +810,9 @@ export function CascadeGraph({ cascade: cascadeProp, compact = false, sharedTick
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             transition={{ type: "spring", stiffness: 110, damping: 24, mass: 1.1, delay: n.isRoot ? 0 : 0.25 + i * 0.06 }}
-            style={{ transformOrigin: `${n.x}px ${n.y}px`, cursor: isDrillable ? "pointer" : "default" }}
-            onPointerDown={isDrillable ? (ev) => ev.stopPropagation() : undefined}
-            onClick={isDrillable ? () => drillIntoEvent(n.eventId!, n.ticker) : undefined}
+            style={{ transformOrigin: `${n.x}px ${n.y}px`, cursor: n.isRoot ? "default" : "pointer" }}
+            onPointerDown={!n.isRoot ? (ev) => ev.stopPropagation() : undefined}
+            onClick={!n.isRoot ? () => openReasoning(n) : undefined}
           >
             {/* Root pulse rings */}
             {n.isRoot && (

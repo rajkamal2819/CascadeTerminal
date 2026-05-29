@@ -332,6 +332,74 @@ async def upsert_watchlist(
 
 
 # ---------------------------------------------------------------------------
+# Admin: manual worker fan-out
+#
+# Runs every poll-style worker once concurrently so judges can refresh the
+# feed on demand without waiting for the cron tick. WebSocket workers
+# (finnhub_ws, aisstream) are skipped — they connect persistently and don't
+# have a one-shot semantic. Cooldown guard prevents rate-limit bursts (Voyage
+# free tier is 3 RPM).
+# ---------------------------------------------------------------------------
+
+_REFRESH_COOLDOWN_S = 30
+_last_refresh_at = 0.0
+_refresh_lock = asyncio.Lock()
+
+
+async def _run_one(name: str, fn):  # type: ignore[no-untyped-def]
+    try:
+        await fn()
+        return {"worker": name, "ok": True}
+    except Exception as e:  # noqa: BLE001 — surface to UI
+        log.warning("refresh worker %s failed: %s", name, e)
+        return {"worker": name, "ok": False, "error": str(e)[:200]}
+
+
+@app.post("/admin/refresh")
+async def admin_refresh() -> dict:
+    """Fan out a one-shot run across all poll-style workers."""
+    global _last_refresh_at
+    now = asyncio.get_event_loop().time()
+    if now - _last_refresh_at < _REFRESH_COOLDOWN_S:
+        wait = int(_REFRESH_COOLDOWN_S - (now - _last_refresh_at))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Refresh on cooldown — try again in {wait}s.",
+        )
+    if _refresh_lock.locked():
+        raise HTTPException(status_code=409, detail="A refresh is already running.")
+
+    async with _refresh_lock:
+        _last_refresh_at = asyncio.get_event_loop().time()
+
+        # Lazy imports so the api container doesn't pay startup cost for
+        # worker modules unless a refresh is actually requested.
+        from workers import gdelt, noaa, opensky, usgs  # work() entrypoints
+        from workers import alpha_vantage, marketaux, reddit, sec_edgar, yfinance_ticks  # poll_once()
+
+        jobs = [
+            ("gdelt", gdelt.work),
+            ("noaa", noaa.work),
+            ("usgs", usgs.work),
+            ("opensky", opensky.work),
+            ("marketaux", marketaux.poll_once),
+            ("sec_edgar", sec_edgar.poll_once),
+            ("reddit", reddit.poll_once),
+            ("alpha_vantage", alpha_vantage.poll_once),
+            ("yfinance_ticks", yfinance_ticks.poll_once),
+        ]
+        results = await asyncio.gather(*(_run_one(n, f) for n, f in jobs))
+
+    ok = sum(1 for r in results if r["ok"])
+    return {
+        "ran": len(results),
+        "succeeded": ok,
+        "failed": len(results) - ok,
+        "workers": results,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Server-Sent Events — backed by MongoDB change streams
 # ---------------------------------------------------------------------------
 

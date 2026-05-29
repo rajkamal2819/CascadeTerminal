@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import type { CascadeResponse, Event } from "./api";
+import type { NodeReasoningInfo } from "./cascade-layout";
 
 type StreamStatus = "idle" | "connecting" | "live" | "reconnecting";
 
@@ -36,8 +37,16 @@ type State = {
   // ELI5 toggle on narrative card — re-renders with novice-friendly text.
   eli5: boolean;
 
+  // Counterfactual mode: "what if this event had NOT happened?" — flips the
+  // cascade rail / overlay to render the diff view derived from cascade nodes.
+  counterfactual: boolean;
+
   // Source filter chips: when non-empty, only show events with this source_type.
   sourceFilter: string | null;
+
+  // NodeReasoning popover state — set when a node in the cascade graph
+  // (2D or 3D) is clicked. null means the popover is closed.
+  reasoningNode: NodeReasoningInfo | null;
 
   setEvents: (events: Event[]) => void;
   pushEvent: (e: Event) => void;
@@ -55,7 +64,9 @@ type State = {
   setStreamStatus: (s: StreamStatus) => void;
   setTimeOffset: (n: number) => void;
   toggleEli5: () => void;
+  toggleCounterfactual: () => void;
   setSourceFilter: (s: string | null) => void;
+  setReasoningNode: (n: NodeReasoningInfo | null) => void;
 };
 
 const MAX_EVENTS = 500;
@@ -71,7 +82,9 @@ export const useStore = create<State>((set) => ({
   compareIds: null,
   timeOffset: 0,
   eli5: false,
+  counterfactual: false,
   sourceFilter: null,
+  reasoningNode: null,
   lastEventAt: null,
   lastHeartbeatAt: null,
 
@@ -161,5 +174,7 @@ export const useStore = create<State>((set) => ({
   setStreamStatus: (streamStatus) => set({ streamStatus }),
   setTimeOffset: (timeOffset) => set({ timeOffset }),
   toggleEli5: () => set((s) => ({ eli5: !s.eli5 })),
+  toggleCounterfactual: () => set((s) => ({ counterfactual: !s.counterfactual })),
   setSourceFilter: (sourceFilter) => set({ sourceFilter }),
+  setReasoningNode: (reasoningNode) => set({ reasoningNode }),
 }));

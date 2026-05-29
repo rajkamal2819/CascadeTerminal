@@ -17,6 +17,7 @@ COPY agent ./agent
 COPY embed ./embed
 COPY scripts ./scripts
 COPY data ./data
+COPY workers ./workers
 
 RUN pip install --upgrade pip setuptools wheel && pip install -e .
 
