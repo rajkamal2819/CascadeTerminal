@@ -375,9 +375,17 @@ async def admin_refresh() -> dict:
         # Lazy imports so the api container doesn't pay startup cost for
         # worker modules unless a refresh is actually requested.
         from workers import gdelt, noaa, opensky, usgs  # work() entrypoints
-        from workers import alpha_vantage, marketaux, reddit, sec_edgar, yfinance_ticks  # poll_once()
+        from workers import (  # poll_once()
+            alpha_vantage,
+            marketaux,
+            reddit,
+            rss_news,
+            sec_edgar,
+            yfinance_ticks,
+        )
 
         jobs = [
+            ("rss_news", rss_news.poll_once),   # tech / industrial / energy via RSS
             ("gdelt", gdelt.work),
             ("noaa", noaa.work),
             ("usgs", usgs.work),
