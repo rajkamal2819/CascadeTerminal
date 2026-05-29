@@ -17,6 +17,7 @@ import { Feed } from "@/components/Feed";
 import { Globe } from "@/components/Globe";
 import { ReplayMenu } from "@/components/ReplayMenu";
 import { RefreshButton } from "@/components/RefreshButton";
+import { WorkerProgressBar } from "@/components/WorkerProgressBar";
 import { ResizableRail } from "@/components/ResizableRail";
 import { SearchBar } from "@/components/SearchBar";
 import { LiveStatusPill } from "@/components/LiveStatusPill";
@@ -369,6 +370,7 @@ export default function TerminalPage() {
       <CounterfactualOverlay />
       <DemoTour />
       <NodeReasoning />
+      <WorkerProgressBar />
 
       {/* ── Mobile: stack ── */}
       <div className="absolute inset-x-2 bottom-12 top-[72px] z-10 md:hidden">

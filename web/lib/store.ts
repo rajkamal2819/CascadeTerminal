@@ -48,6 +48,11 @@ type State = {
   // (2D or 3D) is clicked. null means the popover is closed.
   reasoningNode: NodeReasoningInfo | null;
 
+  // Manual /admin/refresh state. Drives the top progress bar so the user
+  // can keep using the current cascade while workers run in the background.
+  workerRunState: "idle" | "running" | "ok" | "error";
+  workerRunMessage: string;
+
   setEvents: (events: Event[]) => void;
   pushEvent: (e: Event) => void;
   pushBackfill: (events: Event[]) => void;
@@ -67,6 +72,7 @@ type State = {
   toggleCounterfactual: () => void;
   setSourceFilter: (s: string | null) => void;
   setReasoningNode: (n: NodeReasoningInfo | null) => void;
+  setWorkerRun: (state: State["workerRunState"], message?: string) => void;
 };
 
 const MAX_EVENTS = 500;
@@ -85,6 +91,8 @@ export const useStore = create<State>((set) => ({
   counterfactual: false,
   sourceFilter: null,
   reasoningNode: null,
+  workerRunState: "idle",
+  workerRunMessage: "",
   lastEventAt: null,
   lastHeartbeatAt: null,
 
@@ -177,4 +185,6 @@ export const useStore = create<State>((set) => ({
   toggleCounterfactual: () => set((s) => ({ counterfactual: !s.counterfactual })),
   setSourceFilter: (sourceFilter) => set({ sourceFilter }),
   setReasoningNode: (reasoningNode) => set({ reasoningNode }),
+  setWorkerRun: (workerRunState, workerRunMessage = "") =>
+    set({ workerRunState, workerRunMessage }),
 }));
