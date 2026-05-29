@@ -325,10 +325,31 @@ async def build_cascade(
 
     if not root_tickers:
         # No tickers on the root (geopolitics / GDELT / NOAA / USGS events).
-        # The supply-chain $graphLookup can't seed, but a semantic-similarity
-        # fallback still produces a useful cascade: top-K events most related
-        # to this one by Voyage embedding similarity, each rendered as a
-        # pseudo-node tagged `relationship_type: "semantic"`.
+        # First try Gemini Geo-Cascade: structured impact hypothesis →
+        # validated tickers → $graphLookup L1→L2. This is the innovation
+        # for tickerless events; the semantic vector fallback below kicks
+        # in only if Gemini errors / rate-limits / returns nothing usable.
+        from agent.geo_cascade import build_geo_cascade, is_geo_candidate
+        # Re-shape root for the geo helper.
+        geo_event = {
+            "headline": headline,
+            "text": root_text,
+            "sector": root_doc.get("sector", ""),
+            "impact": root_doc.get("impact", ""),
+            "published_at": root_doc.get("published_at"),
+            "source_type": root_doc.get("source_type", ""),
+            "tickers": [],
+            "geo_cascade": root_doc.get("geo_cascade"),
+        }
+        if is_geo_candidate(geo_event):
+            try:
+                geo_resp = await build_geo_cascade(geo_event, event_id, db)
+            except Exception as e:
+                log.warning("geo_cascade pipeline error: %s", e)
+                geo_resp = None
+            if geo_resp and geo_resp.get("nodes"):
+                return geo_resp
+
         fallback_nodes = await _related_events_fallback(db, root_doc, top_k=top_k)
         return {
             "root": {

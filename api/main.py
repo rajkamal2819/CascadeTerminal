@@ -356,7 +356,7 @@ async def _run_one(name: str, fn):  # type: ignore[no-untyped-def]
 
 
 @app.post("/admin/refresh")
-async def admin_refresh() -> dict:
+async def admin_refresh(request: Request) -> dict:
     """Fan out a one-shot run across all poll-style workers."""
     global _last_refresh_at
     now = asyncio.get_event_loop().time()
@@ -399,12 +399,59 @@ async def admin_refresh() -> dict:
         results = await asyncio.gather(*(_run_one(n, f) for n, f in jobs))
 
     ok = sum(1 for r in results if r["ok"])
+
+    # Pre-warm Gemini Geo-Cascade for the freshest tickerless impactful
+    # events — judges click those first and we don't want them watching a
+    # 5–8s Pro call. Bounded (top 5, 4-concurrent) so we don't blow the
+    # 100/day Pro free-tier cap on a single refresh.
+    prewarmed = 0
+    try:
+        prewarmed = await _prewarm_geo_cascade(request.app.state.db, limit=5)
+    except Exception as e:
+        log.warning("geo prewarm failed: %s", e)
+
     return {
         "ran": len(results),
         "succeeded": ok,
         "failed": len(results) - ok,
         "workers": results,
+        "geo_prewarmed": prewarmed,
     }
+
+
+async def _prewarm_geo_cascade(db, limit: int = 5) -> int:
+    """Fire Gemini geo-cascade on top-N recent tickerless impactful events
+    and cache the hypothesis on the event doc. Concurrency-bounded; per-call
+    failures are swallowed so one bad event can't break the whole sweep."""
+    from agent.geo_cascade import build_geo_cascade, is_geo_candidate, TICKERLESS_SECTORS
+
+    cur = db.events.find(
+        {
+            "tickers": {"$in": [None, []]},
+            "impact": {"$in": ["medium", "high", "critical"]},
+            "sector": {"$in": list(TICKERLESS_SECTORS)},
+            "geo_cascade": {"$exists": False},
+        },
+        {"_id": 1, "headline": 1, "text": 1, "sector": 1, "impact": 1,
+         "published_at": 1, "source_type": 1, "tickers": 1},
+    ).sort("published_at", -1).limit(limit)
+    candidates = await cur.to_list(length=limit)
+
+    sem = asyncio.Semaphore(2)
+
+    async def _one(doc: dict) -> bool:
+        if not is_geo_candidate(doc):
+            return False
+        async with sem:
+            try:
+                resp = await build_geo_cascade(doc, str(doc["_id"]), db)
+                return bool(resp and resp.get("nodes"))
+            except Exception as e:
+                log.warning("geo prewarm one failed: %s", e)
+                return False
+
+    flags = await asyncio.gather(*(_one(d) for d in candidates))
+    return sum(1 for f in flags if f)
 
 
 # ---------------------------------------------------------------------------

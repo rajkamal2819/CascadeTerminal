@@ -78,6 +78,29 @@ class CascadeNode(BaseModel):
     cascade_score: float
     why: str
     event_id: str = ""  # most-recent event involving this ticker — drives drill-in
+    direction: int = 0  # -1 negative, 0 neutral/unknown, +1 positive — geo-cascade only
+
+
+class GeoRegion(BaseModel):
+    name: str
+    iso: str | None = None
+    role: str = "other"
+
+
+class GeoSectorExposure(BaseModel):
+    name: str
+    exposure: str = "other"
+    confidence: float = 0.5
+
+
+class GeoCascadeMeta(BaseModel):
+    event_type: str = "other"
+    regions: list[GeoRegion] = Field(default_factory=list)
+    sectors: list[GeoSectorExposure] = Field(default_factory=list)
+    transmission_mechanism: str = ""
+    time_horizon: str = ""
+    historical_analog: str = ""
+    model: str = ""
 
 
 class CascadeEdge(BaseModel):
@@ -110,6 +133,7 @@ class CascadeResponse(BaseModel):
     fallback: str = ""
     narrative: str = ""  # cached Gemini summary (empty until synth completes)
     severity: str = ""   # LOW|MEDIUM|HIGH|CRITICAL from synthesis
+    geo_cascade: GeoCascadeMeta | None = None  # Gemini 2.5 Pro impact hypothesis
 
 
 class StatsResponse(BaseModel):

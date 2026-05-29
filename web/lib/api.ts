@@ -51,6 +51,7 @@ export type CascadeNode = {
   cascade_score: number;
   why: string;
   event_id?: string;
+  direction?: number;  // -1 neg, 0 neutral, +1 pos (geo-cascade only)
 };
 
 export type CascadeEdge = {
@@ -71,6 +72,18 @@ export type CascadeRoot = {
   source_type: string;
 };
 
+export type GeoRegion = { name: string; iso?: string | null; role?: string };
+export type GeoSectorExposure = { name: string; exposure?: string; confidence?: number };
+export type GeoCascadeMeta = {
+  event_type: string;
+  regions: GeoRegion[];
+  sectors: GeoSectorExposure[];
+  transmission_mechanism: string;
+  time_horizon?: string;
+  historical_analog?: string;
+  model?: string;
+};
+
 export type CascadeResponse = {
   root: CascadeRoot;
   nodes: CascadeNode[];
@@ -80,6 +93,7 @@ export type CascadeResponse = {
   fallback?: string;
   narrative?: string;
   severity?: string;
+  geo_cascade?: GeoCascadeMeta | null;
 };
 
 export type NarrativeResponse = {

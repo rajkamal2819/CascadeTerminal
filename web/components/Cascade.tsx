@@ -6,6 +6,7 @@ import { X, Zap, Network, Sparkles, Search, Scale, Eye, Brain, ChevronDown, Tras
 import { api, type CascadeNode, type CascadeResponse, type CascadeEdge, type MemoryRecentItem, type SocietyResponse } from "@/lib/api";
 import { getDeviceId } from "@/lib/deviceId";
 import { useStore } from "@/lib/store";
+import { GeoCascadePanel } from "./GeoCascadePanel";
 
 // Extract readable company name — for semantic fallback nodes the real name
 // hides inside the "why" field as "8-K - Company Name (CIK) (Filer)".
@@ -281,9 +282,11 @@ export function Cascade() {
           {/* Header */}
           <div className="flex items-center justify-between border-b border-white/5 px-4 pt-3 pb-2.5">
             <div className="flex items-center gap-2">
-              <Network size={13} className={cascade?.fallback ? "text-muted" : "text-accent"} />
+              <Network size={13} className={cascade?.fallback === "related_events" || cascade?.fallback === "semantic_no_tickers" ? "text-muted" : "text-accent"} />
               <span className="mono text-[10px] uppercase tracking-[0.2em] text-muted">
-                {cascade?.fallback === "related_events"
+                {cascade?.fallback === "gemini_geo"
+                  ? "Cascade · Gemini Geo + $graphLookup"
+                  : cascade?.fallback === "related_events" || cascade?.fallback === "semantic_no_tickers"
                   ? "Related · $vectorSearch"
                   : "Cascade · $graphLookup"}
               </span>
@@ -363,7 +366,7 @@ export function Cascade() {
             const verdict = computeVerdict(cascade);
             const weakSet = new Set((society?.critic?.weak_tickers ?? []).map((t) => t.toUpperCase()));
             const verdictColor = POLARITY_COLOR[verdict.tone];
-            const isFallback = cascade.fallback === "related_events";
+            const isFallback = cascade.fallback === "related_events" || cascade.fallback === "semantic_no_tickers";
             return (
             <>
               {/* Root */}
@@ -460,8 +463,11 @@ export function Cascade() {
                 )}
               </div>
 
+              {/* Gemini Geo-Cascade panel — regions, sector exposure, transmission */}
+              {cascade.geo_cascade && <GeoCascadePanel cascade={cascade} />}
+
               {/* Hop summary (only when real cascade) */}
-              {!cascade.fallback && cascade.hop_counts && Object.keys(cascade.hop_counts).length > 0 && (
+              {(!cascade.fallback || cascade.fallback === "gemini_geo") && cascade.hop_counts && Object.keys(cascade.hop_counts).length > 0 && (
                 <div className="flex gap-1.5 border-b border-white/5 px-4 py-2 text-[10px]">
                   {Object.entries(cascade.hop_counts).map(([lvl, n]) => (
                     <span

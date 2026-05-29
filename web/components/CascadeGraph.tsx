@@ -304,7 +304,7 @@ function computeVerdict(cascade: CascadeResponse, bottleneck: string | null): {
   text: string;
   tone: "damage" | "exposed" | "benefit" | "related";
 } {
-  const isFallback = cascade.fallback === "related_events";
+  const isFallback = cascade.fallback === "related_events" || cascade.fallback === "semantic_no_tickers";
   // Risk score: weighted sum of node scores with hop decay
   let total = 0;
   for (const n of cascade.nodes) {
@@ -569,7 +569,7 @@ export function CascadeGraph({ cascade: cascadeProp, compact = false, sharedTick
     ) : null;
   }
 
-  const isSemantic = cascade.fallback === "related_events";
+  const isSemantic = cascade.fallback === "related_events" || cascade.fallback === "semantic_no_tickers";
 
   return (
     <div ref={containerRef} className="relative h-full w-full overflow-hidden">
