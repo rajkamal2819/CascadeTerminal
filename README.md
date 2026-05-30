@@ -10,8 +10,6 @@ When a single headline moves markets, Cascade tells you *which 30 stocks move ne
 
 <img src="docs/hero.png" alt="Cascade terminal — 3D globe with live cascade arcs" width="100%" />
 
-Built for the [Devpost Rapid Agent Hackathon](https://rapid-agent.devpost.com/) · MongoDB + Google Cloud partner track · Submission deadline **2026-06-11**
-
 </div>
 
 ---
@@ -349,7 +347,7 @@ cascade/
 
 ## Demo video
 
-📺 *Coming with the Devpost submission.* A 3-minute walkthrough covering the problem, the live terminal, the Atlas walkthrough showing `$graphLookup` + vector indexes + change streams in action.
+📺 *Coming soon.* A 3-minute walkthrough covering the problem, the live terminal, and the Atlas walkthrough showing `$graphLookup` + vector indexes + change streams in action.
 
 ---
 
