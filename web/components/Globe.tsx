@@ -155,6 +155,7 @@ export function Globe() {
     });
   }, [eventsAll, timeOffset]);
   const cascade = useStore((s) => s.cascade);
+  const geoArcMode = useStore((s) => s.geoArcMode);
   const selectEvent = useStore((s) => s.selectEvent);
   const streamStatus = useStore((s) => s.streamStatus);
   const lastEventAt = useStore((s) => s.lastEventAt);
@@ -594,16 +595,91 @@ export function Globe() {
     return [{ lat: sub.lat, lng: sub.lng, text: "☀ noon", size: 0.7, color: "#fde68a" }];
   }, [now]);
 
+  // Geo-cascade layer — Gemini-inferred region centroids for tickerless
+  // events (geopolitics, disasters, macro). The supply-chain $graphLookup
+  // path can't seed these, so the globe renders the *region* as a pulsing
+  // pin and fans arcs from each region to every affected company HQ. Mode
+  // is user-cycled from the GeoCascadePanel ("all" / "primary" / "off") so
+  // multi-region events don't get visually busy.
+  const geoRegionsActive = useMemo(() => {
+    if (!cascade?.geo_cascade?.regions || geoArcMode === "off") return [];
+    const valid = cascade.geo_cascade.regions.filter(
+      (r) => typeof r.lat === "number" && typeof r.lon === "number",
+    );
+    return geoArcMode === "primary" ? valid.slice(0, 1) : valid;
+  }, [cascade, geoArcMode]);
+
+  const geoArcs = useMemo(() => {
+    if (!cascade || geoRegionsActive.length === 0) return [];
+    type Arc = {
+      startLat: number; startLng: number; endLat: number; endLng: number;
+      color: [string, string]; stroke: number; hop: number; polarity: string;
+      dashTime: number; dashLen: number; dashGap: number; altitude: number;
+    };
+    const out: Arc[] = [];
+    // Origin colour = accent cyan (matches GeoCascadePanel header), dest
+    // colour = polarity colour for the affected company. Distinct from
+    // ticker→ticker arcs (rose/amber) so the geo layer reads as "regional
+    // exposure" not "supply-chain hop".
+    for (const region of geoRegionsActive) {
+      const rLat = region.lat as number;
+      const rLng = region.lon as number;
+      for (const n of cascade.nodes.slice(0, 12)) {
+        if (n.hop > revealedHops + 1) continue;
+        const hq = HQ[n.ticker];
+        if (!hq) continue;
+        const polarity = n.direction === -1 ? "damage" : n.direction === 1 ? "benefit" : "exposed";
+        const destColor = POLARITY_COLOR[polarity];
+        out.push({
+          startLat: rLat, startLng: rLng,
+          endLat: hq.lat, endLng: hq.lng,
+          color: ["rgba(34,211,238,0.85)", destColor],
+          stroke: 1.2 + n.cascade_score * 0.4,
+          hop: Math.max(1, n.hop),
+          polarity,
+          dashTime: 1800,
+          dashLen: 0.16,
+          dashGap: 0.84,
+          altitude: 0.45,
+        });
+      }
+    }
+    return out.slice(0, 40);
+  }, [cascade, geoRegionsActive, revealedHops]);
+
+  const geoRegionRings = useMemo(() => {
+    return geoRegionsActive.map((r) => ({
+      lat: r.lat as number,
+      lng: r.lon as number,
+      color: "#22d3ee",
+      maxR: 8,
+      period: 1500,
+    }));
+  }, [geoRegionsActive]);
+
+  const geoRegionLabels = useMemo(() => {
+    return geoRegionsActive.map((r) => ({
+      lat: r.lat as number,
+      lng: r.lon as number,
+      text: r.name,
+      size: 0.6,
+      color: "#67e8f9",
+    }));
+  }, [geoRegionsActive]);
+
   // Merge cascade arcs with ambient idle arcs so we don't pass two layers.
-  const allArcs = useMemo(() => [...arcs, ...ambientArcs], [arcs, ambientArcs]);
+  const allArcs = useMemo(() => [...arcs, ...geoArcs, ...ambientArcs], [arcs, geoArcs, ambientArcs]);
   // Merge cascade rings with fresh-arrival shockwaves, hop-landing impact
   // flashes, and idle shimmer rings.
   const allRings = useMemo(
-    () => [...rings, ...freshRings, ...flashRings, ...shimmerRings],
-    [rings, freshRings, flashRings, shimmerRings],
+    () => [...rings, ...freshRings, ...flashRings, ...shimmerRings, ...geoRegionRings],
+    [rings, freshRings, flashRings, shimmerRings, geoRegionRings],
   );
-  // Merge labels with the sun marker.
-  const allLabels = useMemo(() => [...labels, ...sunLabel], [labels, sunLabel]);
+  // Merge labels with the sun marker and any active geo-cascade region pins.
+  const allLabels = useMemo(
+    () => [...labels, ...sunLabel, ...geoRegionLabels],
+    [labels, sunLabel, geoRegionLabels],
+  );
 
   // Idle auto-rotate. Constrain zoom so users can dive in without pixelation.
   useEffect(() => {
@@ -627,9 +703,18 @@ export function Globe() {
     if (!g?.pointOfView || !cascade) return;
     const candidates = [...cascade.root.tickers, ...cascade.nodes.map((n) => n.ticker)];
     const t = candidates.find((tk) => HQ[tk]);
-    if (!t) return;
-    const hq = HQ[t];
-    g.pointOfView({ lat: hq.lat, lng: hq.lng, altitude: 1.7 }, 1400);
+    if (t) {
+      const hq = HQ[t];
+      g.pointOfView({ lat: hq.lat, lng: hq.lng, altitude: 1.7 }, 1400);
+      return;
+    }
+    // Tickerless geo-cascade — fly to the primary inferred region instead.
+    const region = cascade.geo_cascade?.regions?.find(
+      (r) => typeof r.lat === "number" && typeof r.lon === "number",
+    );
+    if (region) {
+      g.pointOfView({ lat: region.lat as number, lng: region.lon as number, altitude: 1.7 }, 1400);
+    }
   }, [cascade]);
 
   return (

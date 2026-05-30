@@ -1,7 +1,8 @@
 "use client";
 
-import { Globe2, Sparkles, TrendingDown, TrendingUp, Minus } from "lucide-react";
+import { Globe2, Sparkles, TrendingDown, TrendingUp, Minus, MapPin } from "lucide-react";
 import type { CascadeResponse, GeoCascadeMeta } from "@/lib/api";
+import { useStore } from "@/lib/store";
 
 // Rendered above the related-nodes list when the cascade was built via
 // Gemini 2.5 Pro impact hypothesis (tickerless events: geopolitics,
@@ -35,9 +36,20 @@ function DirectionIcon({ d }: { d?: number }) {
   return <Minus size={11} className="text-muted" />;
 }
 
+const ARC_MODE_LABEL: Record<string, string> = {
+  all: "arcs · all",
+  primary: "arcs · primary",
+  off: "arcs · off",
+};
+
 export function GeoCascadePanel({ cascade }: { cascade: CascadeResponse }) {
   const geo: GeoCascadeMeta | null | undefined = cascade.geo_cascade;
+  const geoArcMode = useStore((s) => s.geoArcMode);
+  const cycleGeoArcMode = useStore((s) => s.cycleGeoArcMode);
   if (!geo) return null;
+  const mappedRegions = geo.regions.filter(
+    (r) => typeof r.lat === "number" && typeof r.lon === "number",
+  ).length;
 
   return (
     <div className="border-b border-white/5 px-4 py-3">
@@ -73,22 +85,45 @@ export function GeoCascadePanel({ cascade }: { cascade: CascadeResponse }) {
       {/* Regions */}
       {geo.regions.length > 0 && (
         <div className="mb-2.5">
-          <div className="mono mb-1 flex items-center gap-1 text-[8px] uppercase tracking-widest text-muted">
-            <Globe2 size={9} /> Regions
+          <div className="mono mb-1 flex items-center justify-between gap-1 text-[8px] uppercase tracking-widest text-muted">
+            <span className="flex items-center gap-1">
+              <Globe2 size={9} /> Regions
+              {mappedRegions > 0 && (
+                <span className="ml-1 text-accent/70">· {mappedRegions} mapped</span>
+              )}
+            </span>
+            {mappedRegions > 0 && (
+              <button
+                onClick={cycleGeoArcMode}
+                className="mono inline-flex items-center gap-1 rounded border border-accent/25 bg-accent/[0.06] px-1.5 py-0.5 text-[8px] uppercase tracking-widest text-accent transition hover:bg-accent/10"
+                title="Toggle globe arc density"
+              >
+                <MapPin size={8} />
+                {ARC_MODE_LABEL[geoArcMode]}
+              </button>
+            )}
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {geo.regions.map((r, i) => (
-              <span
-                key={`${r.name}-${i}`}
-                className="mono inline-flex items-center gap-1 rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[10px]"
-                title={ROLE_LABEL[r.role || "other"] || r.role}
-              >
-                <span className="text-text">{r.name}</span>
-                {r.role && r.role !== "other" && (
-                  <span className="text-muted">· {ROLE_LABEL[r.role] || r.role}</span>
-                )}
-              </span>
-            ))}
+            {geo.regions.map((r, i) => {
+              const mapped = typeof r.lat === "number" && typeof r.lon === "number";
+              return (
+                <span
+                  key={`${r.name}-${i}`}
+                  className="mono inline-flex items-center gap-1 rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[10px]"
+                  title={
+                    mapped
+                      ? `${ROLE_LABEL[r.role || "other"] || r.role} · ${r.lat?.toFixed(2)}, ${r.lon?.toFixed(2)}`
+                      : ROLE_LABEL[r.role || "other"] || r.role
+                  }
+                >
+                  {mapped && <MapPin size={8} className="text-accent/70" />}
+                  <span className="text-text">{r.name}</span>
+                  {r.role && r.role !== "other" && (
+                    <span className="text-muted">· {ROLE_LABEL[r.role] || r.role}</span>
+                  )}
+                </span>
+              );
+            })}
           </div>
         </div>
       )}

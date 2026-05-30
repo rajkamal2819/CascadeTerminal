@@ -72,7 +72,13 @@ export type CascadeRoot = {
   source_type: string;
 };
 
-export type GeoRegion = { name: string; iso?: string | null; role?: string };
+export type GeoRegion = {
+  name: string;
+  iso?: string | null;
+  role?: string;
+  lat?: number | null;
+  lon?: number | null;
+};
 export type GeoSectorExposure = { name: string; exposure?: string; confidence?: number };
 export type GeoCascadeMeta = {
   event_type: string;

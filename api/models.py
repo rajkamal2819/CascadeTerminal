@@ -85,6 +85,8 @@ class GeoRegion(BaseModel):
     name: str
     iso: str | None = None
     role: str = "other"
+    lat: float | None = None  # Gemini-inferred centroid for globe placement
+    lon: float | None = None
 
 
 class GeoSectorExposure(BaseModel):

@@ -74,7 +74,7 @@ Return ONLY valid JSON matching this exact schema — no markdown, no prose:
 {{
   "event_type": "geopolitics|natural_disaster|macro|regulatory|climate|other",
   "regions": [
-    {{"name": "<region>", "iso": "<2-letter ISO or null>", "role": "manufacturing_hub|logistics_chokepoint|exporter|consumer|other"}}
+    {{"name": "<region>", "iso": "<2-letter ISO or null>", "role": "manufacturing_hub|logistics_chokepoint|exporter|consumer|other", "lat": <decimal degrees -90..90>, "lon": <decimal degrees -180..180>}}
   ],
   "sectors": [
     {{"name": "<sector>", "exposure": "supply_disruption|demand_shock|price_spike|regulatory|currency|other", "confidence": <0-1>}}
@@ -93,6 +93,9 @@ Rules:
 - If you don't know the ticker, omit the company. Never invent.
 - Be specific in `mechanism` — name the actual transmission ("fabs in Hsinchu", "Hormuz transit risk → crude spike").
 - Keep `historical_analog` concrete (year + name) or empty.
+- For `lat`/`lon`: use the geographic centroid of the named region (country, province, city, or chokepoint).
+  Pick a point that visually anchors the event — for a chokepoint use the strait itself, for a country use its capital
+  or industrial heartland (e.g. "Taiwan" → Hsinchu ~24.77,120.99 not Taipei). Round to 2 decimals. Never omit.
 """
 
 
@@ -115,6 +118,33 @@ async def _ticker_universe(db) -> tuple[list[str], dict[str, dict]]:
     docs = await cur.to_list(length=500)
     by_ticker = {(d.get("ticker") or "").upper(): d for d in docs if d.get("ticker")}
     return sorted(by_ticker.keys()), by_ticker
+
+
+def _coerce_coord(v: Any, lo: float, hi: float) -> float | None:
+    """Coerce Gemini's lat/lon to a float in range, else None. Defensive — model
+    occasionally emits strings, nulls, or out-of-range hallucinations."""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f < lo or f > hi:  # NaN or out of range
+        return None
+    return round(f, 4)
+
+
+def _clean_region(raw: dict[str, Any]) -> dict[str, Any] | None:
+    name = (raw.get("name") or "").strip()[:80]
+    if not name:
+        return None
+    return {
+        "name": name,
+        "iso": (raw.get("iso") or "") or None,
+        "role": (raw.get("role") or "other")[:32],
+        "lat": _coerce_coord(raw.get("lat"), -90.0, 90.0),
+        "lon": _coerce_coord(raw.get("lon"), -180.0, 180.0),
+    }
 
 
 def _format_universe(by_ticker: dict[str, dict], limit: int = 120) -> str:
@@ -205,13 +235,9 @@ async def gemini_geo_hypothesis(
     return {
         "event_type": (data.get("event_type") or "other"),
         "regions": [
-            {
-                "name": (r.get("name") or "")[:80],
-                "iso": (r.get("iso") or "") or None,
-                "role": (r.get("role") or "other")[:32],
-            }
-            for r in (data.get("regions") or [])[:6]
-            if r.get("name")
+            r for r in (
+                _clean_region(raw) for raw in (data.get("regions") or [])[:6]
+            ) if r is not None
         ],
         "sectors": [
             {

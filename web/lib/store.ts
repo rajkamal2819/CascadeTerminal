@@ -48,6 +48,12 @@ type State = {
   // (2D or 3D) is clicked. null means the popover is closed.
   reasoningNode: NodeReasoningInfo | null;
 
+  // Geo-cascade arc density toggle — for tickerless events the globe can fan
+  // arcs from every Gemini-inferred region to every affected company HQ
+  // ("all"), only the primary region ("primary"), or hide the geo layer
+  // entirely ("off"). Cycled from the GeoCascadePanel filter button.
+  geoArcMode: "all" | "primary" | "off";
+
   // Manual /admin/refresh state. Drives the top progress bar so the user
   // can keep using the current cascade while workers run in the background.
   workerRunState: "idle" | "running" | "ok" | "error";
@@ -72,6 +78,8 @@ type State = {
   toggleCounterfactual: () => void;
   setSourceFilter: (s: string | null) => void;
   setReasoningNode: (n: NodeReasoningInfo | null) => void;
+  setGeoArcMode: (m: State["geoArcMode"]) => void;
+  cycleGeoArcMode: () => void;
   setWorkerRun: (state: State["workerRunState"], message?: string) => void;
 };
 
@@ -91,6 +99,7 @@ export const useStore = create<State>((set) => ({
   counterfactual: false,
   sourceFilter: null,
   reasoningNode: null,
+  geoArcMode: "all",
   workerRunState: "idle",
   workerRunMessage: "",
   lastEventAt: null,
@@ -185,6 +194,12 @@ export const useStore = create<State>((set) => ({
   toggleCounterfactual: () => set((s) => ({ counterfactual: !s.counterfactual })),
   setSourceFilter: (sourceFilter) => set({ sourceFilter }),
   setReasoningNode: (reasoningNode) => set({ reasoningNode }),
+  setGeoArcMode: (geoArcMode) => set({ geoArcMode }),
+  cycleGeoArcMode: () =>
+    set((s) => ({
+      geoArcMode:
+        s.geoArcMode === "all" ? "primary" : s.geoArcMode === "primary" ? "off" : "all",
+    })),
   setWorkerRun: (workerRunState, workerRunMessage = "") =>
     set({ workerRunState, workerRunMessage }),
 }));
