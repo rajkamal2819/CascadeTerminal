@@ -11,6 +11,7 @@ DEPLOYMENT_NOTES.md
 ARCHITECTURE.md
 WORKERS_DEPLOY_PLAN.md
 cloudbuild.workers.yaml
+submission.md
 
 # Secrets & local state
 .env

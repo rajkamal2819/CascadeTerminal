@@ -347,7 +347,50 @@ cascade/
 
 ## Demo video
 
-📺 *Coming soon.* A 3-minute walkthrough covering the problem, the live terminal, and the Atlas walkthrough showing `$graphLookup` + vector indexes + change streams in action.
+📺 **Watch the 3-minute walkthrough → [youtu.be/Cpi3ZEuo8GA](https://youtu.be/Cpi3ZEuo8GA)**
+
+Covers the problem, the live terminal in motion, and the Atlas walkthrough showing `$graphLookup` + vector indexes + change streams in action.
+
+<div align="center">
+
+[<img src="https://img.youtube.com/vi/Cpi3ZEuo8GA/maxresdefault.jpg" alt="Cascade demo video" width="640" />](https://youtu.be/Cpi3ZEuo8GA)
+
+</div>
+
+---
+
+## Screenshots
+
+<div align="center">
+
+**Landing**
+<img src="docs/landing.png" alt="Cascade landing page" width="100%" />
+
+**Terminal overview — live feed (left), 3D globe (center), cascade rail (right)**
+<img src="docs/terminal-overview.png" alt="Terminal overview" width="100%" />
+
+**Click NVDA → globe arcs animate to supplier / customer / peer HQs**
+<img src="docs/nvda-globe.png" alt="NVDA cascade on the 3D globe" width="100%" />
+
+**Cascade graph (2D) — three hops out from the NVDA root**
+<img src="docs/nvda-graph.png" alt="NVDA cascade graph 2D" width="100%" />
+
+**Cascade graph (3D) — same cascade, alternate spatial view**
+<img src="docs/nvda-graph-3d.png" alt="NVDA cascade graph 3D" width="100%" />
+
+**Agent Society — Critic / Predictor / Memory / ELI5 reasoning in parallel**
+<img src="docs/agent-society.png" alt="Agent Society panel" width="100%" />
+
+**Worker runner — manually trigger any of the 8 ingestion agents**
+<img src="docs/run-workers.png" alt="Run-workers admin button" width="100%" />
+
+**Compare mode — pin two events, render both cascades side by side**
+<img src="docs/compare-graphs.png" alt="Compare mode" width="100%" />
+
+**Tickerless event — Gemini Geo-Cascade panel with regions, sectors, transmission mechanism**
+<img src="docs/event2.png" alt="Tickerless geo-cascade event" width="100%" />
+
+</div>
 
 ---
 
